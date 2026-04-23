@@ -234,6 +234,24 @@ body{background:var(--bg);color:var(--text);font-size:15px;min-height:100vh;line
   .header-nav{display:none}
 }
 </style>
+
+<!-- ==================== Firebase SDK ==================== -->
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-database-compat.js"></script>
+<script>
+  // Firebase 설정 (pad-management 프로젝트)
+  const firebaseConfig = {
+    apiKey: "AIzaSyCL7ksii7UUFkMLwYn_NgJfG82KsDCMOAU",
+    authDomain: "pad-management.firebaseapp.com",
+    databaseURL: "https://pad-management-default-rtdb.firebaseio.com",
+    projectId: "pad-management",
+    storageBucket: "pad-management.firebasestorage.app",
+    messagingSenderId: "601465315013",
+    appId: "1:601465315013:web:98e64d47011edd56abdaac"
+  };
+  firebase.initializeApp(firebaseConfig);
+  window.__firebaseDb = firebase.database();
+</script>
 </head>
 <body>
 
@@ -332,6 +350,97 @@ function initData(){
   // 샘플 데이터 제거됨 - 실전 배포용 (빈 상태 시작)
   // 초기 데이터는 설정 페이지에서 직접 입력
   DATA.history=[];
+}
+
+/* ====================== Firebase 실시간 동기화 ====================== */
+window.__fbReady = false;
+window.__fbSaving = false;
+window.__fbPendingSave = false;
+
+/* Firebase에서 전체 데이터 로드 */
+function fbLoadAll(cb){
+  if(!window.__firebaseDb){ if(cb) cb(false); return; }
+  window.__firebaseDb.ref('/').once('value').then(snap=>{
+    const val = snap.val();
+    if(val){
+      // Firebase에서 불러온 데이터로 DATA 덮어쓰기
+      DATA.students = val.students || {};
+      DATA.pads = val.pads || {};
+      DATA.fences = val.fences || {};
+      DATA.history = val.history || [];
+      DATA.freeHistory = val.freeHistory || [];
+      DATA.assignHistory = val.assignHistory || [];
+      DATA.brokenHistory = val.brokenHistory || [];
+      // staff는 admin 보장
+      DATA.staff = val.staff || {};
+      if(!DATA.staff.admin){
+        DATA.staff.admin = {id:'admin',name:'어드민',dept:'어드민',role:'어드민',pw:'3500'};
+      }
+    } else {
+      // 최초 실행 - 빈 상태로 시작하고 Firebase에 초기 저장
+      initData();
+      fbSaveAll();
+    }
+    window.__fbReady = true;
+    if(cb) cb(true);
+  }).catch(err=>{
+    console.error('Firebase 로드 실패:', err);
+    // 오프라인이어도 일단 로컬 초기화
+    initData();
+    if(cb) cb(false);
+  });
+}
+
+/* Firebase에 전체 데이터 저장 (디바운스) */
+let __fbSaveTimer = null;
+function fbSaveAll(){
+  if(!window.__firebaseDb) return;
+  if(__fbSaveTimer) clearTimeout(__fbSaveTimer);
+  __fbSaveTimer = setTimeout(()=>{
+    const payload = {
+      students: DATA.students || {},
+      pads: DATA.pads || {},
+      fences: DATA.fences || {},
+      history: DATA.history || [],
+      freeHistory: DATA.freeHistory || [],
+      assignHistory: DATA.assignHistory || [],
+      brokenHistory: DATA.brokenHistory || [],
+      staff: DATA.staff || {}
+    };
+    window.__firebaseDb.ref('/').set(payload).catch(err=>{
+      console.error('Firebase 저장 실패:', err);
+      // 저장 실패 시 사용자에게 알림
+      if(typeof toast==='function') toast('서버 저장 실패 - 네트워크 확인','error');
+    });
+  }, 300); // 300ms 후 저장 (연속 호출 시 합쳐짐)
+}
+
+/* 실시간 변경 감지 - 다른 사람이 수정하면 자동 반영 */
+function fbStartRealtimeSync(){
+  if(!window.__firebaseDb) return;
+  window.__firebaseDb.ref('/').on('value', snap=>{
+    if(window.__fbSaving) return; // 내가 저장 중이면 무시
+    const val = snap.val();
+    if(!val) return;
+    // DATA 업데이트
+    DATA.students = val.students || {};
+    DATA.pads = val.pads || {};
+    DATA.fences = val.fences || {};
+    DATA.history = val.history || [];
+    DATA.freeHistory = val.freeHistory || [];
+    DATA.assignHistory = val.assignHistory || [];
+    DATA.brokenHistory = val.brokenHistory || [];
+    DATA.staff = val.staff || {};
+    if(!DATA.staff.admin){
+      DATA.staff.admin = {id:'admin',name:'어드민',dept:'어드민',role:'어드민',pw:'3500'};
+    }
+    // 현재 페이지 새로 렌더 (로그인 전이면 무시)
+    if(typeof currentUser!=='undefined' && currentUser){
+      if(typeof refreshCurrentPage==='function'){
+        try{ refreshCurrentPage(); }catch(e){}
+      }
+    }
+  });
 }
 
 // 기종별 전체 구성품 (대여 시작 시 default)
@@ -495,6 +604,8 @@ function addHistory(type,action,detail,sid,pnum){
   const n=new Date();
   const d=`${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')} ${String(n.getHours()).padStart(2,'0')}:${String(n.getMinutes()).padStart(2,'0')}`;
   DATA.history.unshift({date:d,type,action,detail,user:currentUser,studentId:sid,padNum:pnum});
+  // Firebase 자동 저장 (모든 데이터 변경은 addHistory 이후 일어남)
+  if(typeof fbSaveAll==='function') fbSaveAll();
 }
 function todayStr(){const t=new Date();return t.getFullYear()+'-'+String(t.getMonth()+1).padStart(2,'0')+'-'+String(t.getDate()).padStart(2,'0')}
 function nowStr(){const t=new Date();return todayStr()+' '+String(t.getHours()).padStart(2,'0')+':'+String(t.getMinutes()).padStart(2,'0')}
@@ -3675,6 +3786,8 @@ function doFullReset(){
     DATA.assignHistory=[];
     DATA.brokenHistory=[];
     DATA.staff=adminStaff;
+    // Firebase에도 즉시 반영
+    if(typeof fbSaveAll==='function') fbSaveAll();
     toast('전체 초기화 완료. 다시 로그인하세요.','success');
     // 자동 로그아웃
     setTimeout(()=>{
@@ -4463,7 +4576,15 @@ function doLogin(){
   quickLogin(id);
 }
 
-initData();
+// ===== 앱 시작 =====
+// Firebase에서 데이터 로드 후 앱 시작. 실패 시 로컬 빈 상태로 시작.
+if(window.__firebaseDb){
+  fbLoadAll(()=>{
+    fbStartRealtimeSync();
+  });
+} else {
+  initData();
+}
 document.getElementById('modalBg').addEventListener('click',(e)=>{if(e.target.id==='modalBg') closeModal()});
 
 </script>
