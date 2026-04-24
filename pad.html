@@ -2067,8 +2067,22 @@ function cv_refreshPads(){
   const sel=document.getElementById('cv_pad');
   if(!sel || sel.disabled) return;
   const stock=Object.values(DATA.pads).filter(p=>p.type===from && (p.status==='창고'||p.status==='보관'||p.status==='미지정'||p.status==='직원사용') && !p.studentId);
-  sel.innerHTML='<option value="">-- 재고 목록 ('+stock.length+'대) --</option>'+stock.map(p=>`<option value="${p.num}">${p.num} (${p.model||'A9'}, ${p.status})</option>`).join('');
-  if(!stock.length) sel.innerHTML='<option value="">재고 없음</option>';
+  // 펜스 있는 것 먼저 정렬 (배부 가능), 펜스 없는 것 뒤로
+  const withFence = stock.filter(p=>p.fenceNum).sort((a,b)=>(a.num+'').localeCompare(b.num+''));
+  const noFence = stock.filter(p=>!p.fenceNum).sort((a,b)=>(a.num+'').localeCompare(b.num+''));
+  let html = '<option value="">-- 재고 목록 ('+stock.length+'대) --</option>';
+  if(withFence.length){
+    html += '<optgroup label="✓ 펜스 매칭됨 ('+withFence.length+'대) — 바로 전환 후 배부 가능">';
+    html += withFence.map(p=>`<option value="${p.num}">${p.num} (${p.model||'A9'}, ${p.status}) · 펜스 ${p.fenceNum}</option>`).join('');
+    html += '</optgroup>';
+  }
+  if(noFence.length){
+    html += '<optgroup label="⚠ 펜스 없음 ('+noFence.length+'대) — 전환 후 펜스 매칭 필요">';
+    html += noFence.map(p=>`<option value="${p.num}">${p.num} (${p.model||'A9'}, ${p.status}) · 펜스없음</option>`).join('');
+    html += '</optgroup>';
+  }
+  if(!stock.length) html='<option value="">재고 없음</option>';
+  sel.innerHTML = html;
 }
 function cv_updateFromLabel(){
   // From 바뀌면 재고 숫자 반영하려면 모달을 다시 그려야 하지만, 드롭다운 value 자체는 유지.
