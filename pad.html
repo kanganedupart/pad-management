@@ -1973,6 +1973,12 @@ function renderAssignSingle(type){
   return `
   <div class="box">
     <div class="box-title">건바이건 ${type==='신규'?'배부':'대여'}</div>
+    <div class="box-hint" style="font-size:12px;margin-bottom:10px">
+      💡 <b>사용 방법</b><br>
+      ① 창고 패드 + 새 학생 → 신규 배부<br>
+      ② 창고 패드 + 기존 학생 → ⚠ 추가 대여 확인 (보통 1명 = 1개)<br>
+      ③ 이미 배부된 패드 입력 → 자동으로 <b>구성품 수정 모드</b> (누락된 경우 사용)
+    </div>
     <div class="form-row-inline cols-3">
       <div class="form-row">
         <label>패드 번호<span class="req">*</span></label>
@@ -2012,6 +2018,7 @@ function renderAssignSingle(type){
       <div id="as_comps_wrap"></div>
     </div>
     `}
+    <div id="as_editArea"></div>
     <button class="btn btn-primary btn-lg btn-block" onclick="as_save('${type}')">${isNew?'배부':'대여'}하기</button>
   </div>
 
@@ -2049,12 +2056,72 @@ function renderAssignSingle(type){
 function as_onPadInput(type){
   const num=document.getElementById('as_pad').value.trim();
   const h=document.getElementById('as_padHint');
+  // 기존 배부 정보 영역 초기화
+  const editArea = document.getElementById('as_editArea');
+  if(editArea) editArea.innerHTML='';
   if(!num){h.textContent='바로 배부 가능한 패드 입력';h.className='form-hint';return}
   const p=DATA.pads[num];
   if(!p){h.textContent='존재하지 않는 패드';h.className='form-hint err';return}
   if(p.type!==type){h.textContent=`${type} 아님 (${p.type})`;h.className='form-hint err';return}
+
+  // ===== 이미 배부된 패드인 경우: 구성품 수정 모드 =====
+  if(p.status!=='창고' && p.studentId){
+    const st = DATA.students[p.studentId];
+    h.textContent = `이미 배부됨 — ${p.studentId}`;
+    h.className = 'form-hint err';
+    // 학생 이름 자동 매칭 (사용자가 또 입력 안 해도 되게)
+    const nameInput = document.getElementById('as_name');
+    if(nameInput && !nameInput.value) nameInput.value = p.studentId;
+    // 반도 자동 매칭
+    const clsSelect = document.getElementById('as_class');
+    if(clsSelect && st) clsSelect.value = st.class || '정규';
+    if(editArea && type==='월납' && st){
+      const mp = (st.pads||[]).find(pp=>pp.num===num && !pp.archived);
+      if(mp){
+        // components가 객체 배열일 수도, 문자열 배열일 수도 있음 - 정규화
+        const compNames = (mp.components||[]).map(c=>typeof c==='string'?c:(c.name||'')).filter(c=>c && c!=='파손확인');
+        editArea.innerHTML = `
+          <div class="box box-warn" style="margin-top:14px;padding:14px">
+            <div style="font-weight:700;margin-bottom:8px">⚠️ 이 패드는 이미 배부된 상태입니다</div>
+            <div style="font-size:13px;margin-bottom:6px">학생: <b>${st.name}</b>${classBadge(st)} · 상태: ${st.status}</div>
+            <div style="font-size:13px;margin-bottom:12px">배부일: ${mp.assignedDate} · 담당: ${mp.assignedBy||'-'}</div>
+            <div style="font-size:13px;font-weight:700;margin-bottom:8px;border-top:1px solid var(--border);padding-top:10px">현재 구성품 (체크 해제 = 미대여):</div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+              ${compNames.map(c=>{
+                // leased 확인: 객체 형식이면 c.rented, 문자열 형식이면 mp.leased[c]
+                let isLeased = true;
+                if(mp.leased && typeof mp.leased==='object' && c in mp.leased) {
+                  isLeased = mp.leased[c] !== false;
+                } else {
+                  // 객체 형식 (구 데이터): components[i].rented 확인
+                  const compObj = (mp.components||[]).find(cc=>typeof cc==='object' && cc.name===c);
+                  if(compObj) isLeased = compObj.rented !== false;
+                }
+                return `<label style="display:flex;align-items:center;gap:5px;padding:6px 12px;background:${isLeased?'#dcfce7':'#fef2f2'};border:1px solid ${isLeased?'#86efac':'#fca5a5'};border-radius:6px;cursor:pointer">
+                  <input type="checkbox" id="ed_comp_${c}" ${isLeased?'checked':''}> ${c}
+                </label>`;
+              }).join('')}
+            </div>
+            <div class="form-row">
+              <label>수정 사유<span class="req">*</span></label>
+              <input id="ed_reason" placeholder="예: 충전기선 배부 시 재고 없어 미대여 (누락)">
+              <div class="form-hint">변경 사항이 활동 로그에 기록됩니다</div>
+            </div>
+            <div class="page-actions" style="margin-top:10px">
+              <button class="btn btn-primary" onclick="as_saveCompEdit('${num}','${p.studentId}')">구성품 수정 저장</button>
+            </div>
+          </div>`;
+      }
+    } else if(editArea){
+      editArea.innerHTML = `<div class="box box-warn" style="margin-top:14px;padding:14px">
+        <div style="font-weight:700;margin-bottom:6px">⚠️ 이미 배부됨</div>
+        <div style="font-size:13px">학생: ${p.studentId} · 상태: ${p.status}</div>
+        <div style="font-size:12px;color:var(--text-muted);margin-top:8px">신규 배부는 구성품 수정이 지원되지 않습니다.</div>
+      </div>`;
+    }
+    return;
+  }
   if(p.status!=='창고'){h.textContent=`배부 불가 (${p.status})`;h.className='form-hint err';return}
-  if(p.studentId){h.textContent=`이미 학생 있음 (${p.studentId})`;h.className='form-hint err';return}
   if(!p.fenceNum){h.textContent='펜스 없음 — 펜스 관리에서 매칭 먼저';h.className='form-hint err';return}
   h.textContent=`✓ 배부 가능 — ${p.model} · 펜스 ${p.fenceNum}`;h.className='form-hint ok';
   if(type==='월납'){
@@ -2065,6 +2132,64 @@ function as_onPadInput(type){
       </div>
       <div class="form-row" style="margin-top:10px"><label>구성품 미대여 메모 (체크 해제시 필수)</label><input id="as_leaseMemo" placeholder="예: 충전기선 재고 없어 본체+충전기만 대여"></div>`;
   }
+}
+// 이미 배부된 패드의 구성품 수정 저장
+function as_saveCompEdit(padNum, sid){
+  // 권한 확인 (배부 권한자만 = 스타터=데스크 제외)
+  if(currentRole==='스타터'){toast('배부 권한자만 가능 (어드민/교무팀장/교무/총무팀장/총무)','error');return}
+  const st = DATA.students[sid];
+  if(!st){toast('학생 없음','error');return}
+  const mp = (st.pads||[]).find(p=>p.num===padNum && !p.archived);
+  if(!mp){toast('패드 정보 없음','error');return}
+  const reason = (document.getElementById('ed_reason').value||'').trim();
+  if(!reason){toast('수정 사유 필수','error');return}
+  // components 정규화 (객체/문자열 둘 다 처리)
+  const compNames = (mp.components||[]).map(c=>typeof c==='string'?c:(c.name||'')).filter(c=>c && c!=='파손확인');
+  // 변경된 구성품 추적
+  const changes = [];
+  compNames.forEach(c=>{
+    const cb = document.getElementById('ed_comp_'+c);
+    if(!cb) return;
+    // 현재 leased 상태 확인 (두 형식 모두)
+    let wasLeased = true;
+    if(mp.leased && typeof mp.leased==='object' && c in mp.leased) {
+      wasLeased = mp.leased[c] !== false;
+    } else {
+      const compObj = (mp.components||[]).find(cc=>typeof cc==='object' && cc.name===c);
+      if(compObj) wasLeased = compObj.rented !== false;
+    }
+    const nowLeased = cb.checked;
+    if(wasLeased !== nowLeased){
+      // leased 객체 형식으로 통일
+      mp.leased = mp.leased || {};
+      mp.leased[c] = nowLeased;
+      // 객체 형식 components도 동기화
+      if(Array.isArray(mp.components)){
+        mp.components.forEach(cc=>{
+          if(typeof cc==='object' && cc.name===c) cc.rented = nowLeased;
+        });
+      }
+      changes.push(`${c}: ${wasLeased?'대여→미대여':'미대여→대여'}`);
+      // 미대여로 바뀌면 returned도 done 처리 안 함 (미회수 상태)
+      if(!nowLeased){
+        mp.returned = mp.returned || {};
+        mp.returned[c] = mp.returned[c] || {done:false,memos:[]};
+      }
+    }
+  });
+  if(changes.length===0){toast('변경된 구성품이 없습니다','error');return}
+  // 사유 메모 추가
+  mp.leaseMemo = (mp.leaseMemo?mp.leaseMemo+' / ':'') + `[수정 ${todayStr()}] ${reason}`;
+  // 활동 로그
+  addHistory('월납','구성품수정',`${st.name} · ${padNum} · ${changes.join(', ')} (사유: ${reason})`,sid,padNum);
+  toast(`✓ 구성품 수정 완료 (${changes.length}개)`,'success');
+  // 입력 초기화
+  document.getElementById('as_pad').value='';
+  document.getElementById('as_padHint').textContent='바로 배부 가능한 패드 입력';
+  document.getElementById('as_padHint').className='form-hint';
+  document.getElementById('as_editArea').innerHTML='';
+  // 학생 이름란도 초기화
+  const ni = document.getElementById('as_name'); if(ni) ni.value='';
 }
 function as_onFenceType(){
   const t=document.getElementById('as_fenceType').value;
@@ -2077,6 +2202,8 @@ function as_onFenceType(){
   else{re.style.display='none';nw.style.display='block'}
 }
 function as_save(type){
+  // 권한 확인 (배부 권한자만 = 스타터=데스크 제외)
+  if(currentRole==='스타터'){toast('배부 권한자만 가능 (어드민/교무팀장/교무/총무팀장/총무)','error');return}
   const name=document.getElementById('as_name').value.trim();
   const num=document.getElementById('as_pad').value.trim();
   const cls = document.getElementById('as_class')?.value || '정규';
@@ -2089,7 +2216,34 @@ function as_save(type){
   const p=DATA.pads[num];
   if(!p||p.type!==type||p.status!=='창고'){toast('배부 불가 (창고 상태만 가능)','error');return}
   if(!p.fenceNum){toast('펜스 없는 패드 — 펜스 관리에서 먼저 매칭하세요','error');return}
-  if(DATA.students[name]){toast('이미 존재하는 학생','error');return}
+
+  // 기존 학생 발견 → 추가 대여 확인 팝업
+  if(DATA.students[name]){
+    const existing = DATA.students[name];
+    const activePads = (existing.pads||[]).filter(pp=>!pp.archived);
+    const padInfo = activePads.length ? activePads.map(pp=>`${pp.type}·${pp.num}`).join(', ') : '없음';
+    ask(
+      '⚠️ 기존 학생 발견',
+      `<div style="padding:8px 0">
+        <div style="margin-bottom:10px">이미 등록된 학생입니다.</div>
+        <div style="background:#fafaf5;padding:10px;border-radius:6px;font-size:13px;line-height:1.6">
+          <b>${existing.name}</b>${classBadge(existing)} · 상태: ${existing.status}<br>
+          <span style="color:var(--text-muted)">기존 패드: ${padInfo}</span>
+        </div>
+        <div style="margin-top:12px;font-size:13px">정말 <b>${num}</b> 패드를 추가 대여하시겠습니까?</div>
+        <div style="font-size:12px;color:var(--warning);margin-top:6px">⚠ 보통 1명 = 1개입니다. 실수가 아닌지 확인하세요.</div>
+      </div>`,
+      '추가 대여','primary',
+      ()=>as_doSave(type, name, num, cls, true)
+    );
+    return;
+  }
+  // 신규 학생 → 바로 진행
+  as_doSave(type, name, num, cls, false);
+}
+
+function as_doSave(type, name, num, cls, isAddition){
+  const p=DATA.pads[num];
   let fenceNum;
   if(type==='신규'){
     const ft=document.getElementById('as_fenceType').value;
@@ -2114,12 +2268,20 @@ function as_save(type){
     if(anyUn){leaseMemo=(document.getElementById('as_leaseMemo').value||'').trim();if(!leaseMemo){toast('미대여 사유 메모 필수','error');return}}
   }
   const padStatus=type==='신규'?'배부':'대여중';
-  DATA.students[name]={id:name,name,class:cls,status:'재원',pads:[{type,num,model:p.model,fenceNum,assignedDate:dateStr,assignedBy:currentUser,components,leased,returned,leaseMemo:leaseMemo||undefined}]};
+  const newPad = {type,num,model:p.model,fenceNum,assignedDate:dateStr,assignedBy:currentUser,components,leased,returned,leaseMemo:leaseMemo||undefined};
+  if(isAddition){
+    // 기존 학생에 패드 추가
+    DATA.students[name].pads.push(newPad);
+    if(DATA.students[name].status!=='재원') DATA.students[name].status='재원';  // 재원 보장
+  } else {
+    // 신규 학생
+    DATA.students[name]={id:name,name,class:cls,status:'재원',pads:[newPad]};
+  }
   p.status=padStatus;p.studentId=name;p.fenceNum=fenceNum;p.assignedDate=dateStr;p.assignedBy=currentUser;
   DATA.fences[fenceNum]={num:fenceNum,type,status:'사용중',padNum:num,studentId:name};
-  DATA.assignHistory.unshift({id:'ah_'+Date.now(),type,padNum:num,studentId:name,fenceNum,assignedDate:dateStr,assignedBy:currentUser,method:'단건',memo:leaseMemo||''});
-  addHistory(type,'배부',`${name} (${cls}) · ${num}${leaseMemo?' ('+leaseMemo+')':''}`,name,num);
-  toast(`${name}(${cls})에게 ${num} ${type==='신규'?'배부':'대여'} 완료`,'success');
+  DATA.assignHistory.unshift({id:'ah_'+Date.now(),type,padNum:num,studentId:name,fenceNum,assignedDate:dateStr,assignedBy:currentUser,method:isAddition?'추가대여':'단건',memo:leaseMemo||''});
+  addHistory(type, isAddition?'추가대여':'배부', `${name} (${cls}) · ${num}${isAddition?' [추가 대여 - 이미 패드 보유]':''}${leaseMemo?' ('+leaseMemo+')':''}`, name, num);
+  toast(`${name}(${cls})에게 ${num} ${type==='신규'?'배부':'대여'} 완료${isAddition?' (추가)':''}`,'success');
   showPage(type==='신규'?'newAssign':'monthlyAssign');
 }
 
