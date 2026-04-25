@@ -166,6 +166,8 @@ body{background:var(--bg);color:var(--text);font-size:15px;min-height:100vh;line
 .form-hint.ok{color:var(--success)}
 .form-hint.err{color:var(--danger)}
 .form-row-inline{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.form-row-inline.cols-3{grid-template-columns:1.2fr 1fr 1.5fr}
+@media (max-width:900px){.form-row-inline.cols-3{grid-template-columns:1fr}}
 
 .box{background:white;border:1px solid var(--border);border-radius:12px;padding:22px}
 .box-title{font-size:16px;font-weight:700;margin-bottom:14px}
@@ -309,16 +311,24 @@ const MODELS = {
 
 // 페이지별 상태
 const STATE = {
-  search:{q:'',selectedId:null,showPast:{}},
-  free:{q:'',status:'',from:'',to:'',limit:20},
-  newAssign:{mode:'single',histQ:'',histFrom:'',histTo:'',limit:20,showStock:false,recentLimit:5},
-  monthlyAssign:{mode:'single',histQ:'',histFrom:'',histTo:'',limit:20,logLimit:10,tuebanQ:'',showStock:false,recentLimit:5},
-  inventory:{tab:'all',q:'',status:'',by:'',from:'',to:'',limit:30,brokenQ:'',brokenStage:'',brokenFrom:'',brokenTo:''},
+  search:{q:'',cls:'',statusFilter:'',page:1,selectedId:null,showPast:{}},
+  free:{q:'',cls:'',status:'',from:'',to:'',limit:20},
+  newAssign:{mode:'single',histQ:'',histCls:'',histFrom:'',histTo:'',limit:20,showStock:false,recentLimit:5},
+  monthlyAssign:{mode:'single',cls:'',histQ:'',histCls:'',histFrom:'',histTo:'',limit:20,logLimit:10,tuebanQ:'',tuebanCls:'',tuebanStatus:'',tuebanSort:'completeOld',showStock:false,recentLimit:5},
+  inventory:{tab:'all',q:'',cls:'',status:'',by:'',from:'',to:'',limit:30,brokenQ:'',brokenStage:'',brokenFrom:'',brokenTo:'',brokenView:'active'},
   fences:{tab:'work',q:''},
-  refund:{q:'',status:'',from:'',to:'',limit:20},
-  settings:{tab:'gen',logQ:'',logType:'',logAction:'',logBy:'',logFrom:'',logTo:''},
+  refund:{q:'',cls:'',status:'환불대기',sort:'',from:'',to:'',limit:20,lastProcessed:null},
+  settings:{tab:'gen',logQ:'',logCls:'',logType:'',logAction:'',logBy:'',logFrom:'',logTo:''},
   showGuides:{}  // 페이지별 설명 접기/펼치기 상태
 };
+// 반 목록 (마스터 리스트 기반, DATA._classes 우선 / fallback 자동 추적)
+function getAllClasses(){
+  if(DATA._classes && DATA._classes.length) return DATA._classes.slice();
+  // fallback: 학생들에서 추출
+  const set = new Set(['정규']);
+  Object.values(DATA.students||{}).forEach(s=>{ if(s.class) set.add(s.class); });
+  return Array.from(set).sort((a,b)=>{ if(a==='정규') return -1; if(b==='정규') return 1; return a.localeCompare(b); });
+}
 
 // 페이지 설명 접기/펼치기 공통 컴포넌트
 function renderGuideBox(pageKey, content, defaultOpen){
@@ -350,6 +360,10 @@ function initData(){
   // 샘플 데이터 제거됨 - 실전 배포용 (빈 상태 시작)
   // 초기 데이터는 설정 페이지에서 직접 입력
   DATA.history=[];
+  // 무료대여 사용 시간 옵션 기본값 (분 단위)
+  if(!DATA._freeLendDurations) DATA._freeLendDurations = [15,30,45,60,120,180];
+  // 반 마스터 리스트 (초기: 정규/윈터/지파)
+  if(!DATA._classes) DATA._classes = ['정규','윈터','지파'];
 }
 
 /* ====================== Firebase 실시간 동기화 (재작성) ====================== */
@@ -528,8 +542,44 @@ function calc(){
   });
   return s;
 }
-function isOverdueFree(p){if(!p.endDate) return false; return TODAY > new Date(p.endDate+'T23:59:59')}
-function overdueDays(p){if(!p.endDate) return 0; const d=Math.floor((TODAY-new Date(p.endDate))/86400000); return d>0?d:0}
+function isOverdueFree(p){
+  // duration(분) + startAt(ISO) 있으면: 분 단위 판단
+  if(p.duration && p.startAt){
+    const due = new Date(p.startAt).getTime() + p.duration*60*1000;
+    return Date.now() > due;
+  }
+  // 기존 동작: 반납 예정일 자정 초과
+  if(!p.endDate) return false;
+  return TODAY > new Date(p.endDate+'T23:59:59');
+}
+function overdueDays(p){
+  // duration 기반이면 "경과 분/시간" 반환 (음수면 남은 시간)
+  if(p.duration && p.startAt){
+    const due = new Date(p.startAt).getTime() + p.duration*60*1000;
+    const diffMin = Math.floor((Date.now() - due)/60000);
+    return diffMin > 0 ? diffMin : 0; // 분 단위 반환 (표시용)
+  }
+  if(!p.endDate) return 0;
+  const d=Math.floor((TODAY-new Date(p.endDate))/86400000);
+  return d>0?d:0;
+}
+// 경과 시간을 사람이 읽기 쉬운 문자열로 변환 (분 단위면 "30분 경과", 아니면 "2일 경과")
+function overdueLabel(p){
+  if(p.duration && p.startAt){
+    const due = new Date(p.startAt).getTime() + p.duration*60*1000;
+    const diffMs = Date.now() - due;
+    if(diffMs <= 0) return '';
+    const mins = Math.floor(diffMs/60000);
+    if(mins<60) return mins+'분 경과';
+    const hrs = Math.floor(mins/60);
+    const rem = mins%60;
+    if(hrs<24) return hrs+'시간'+(rem?' '+rem+'분':'')+' 경과';
+    const days = Math.floor(hrs/24);
+    return days+'일 경과';
+  }
+  const d = overdueDays(p);
+  return d>0 ? d+'일 경과' : '';
+}
 
 // ===== 권한 체계 =====
 // 메뉴: 모든 메뉴 뷰 가능 (단 일반은 기능 제한)
@@ -589,10 +639,54 @@ function renderNav(){
     `<div class="nav-item ${currentPage===m?'active':''}" onclick="showPage('${m}')">${MENU_LABELS[m]}</div>`).join('');
 }
 function showPage(p){
+  // 한글 IME 조합 중이면 재렌더 스킵 (조합 깨짐 방지)
+  if(window.__imeComposing){
+    window.__pendingPage = p;
+    return;
+  }
+  // 재렌더 전 현재 포커스 요소 정보 저장
+  const ae = document.activeElement;
+  let focusInfo = null;
+  if(ae && (ae.tagName==='INPUT' || ae.tagName==='TEXTAREA' || ae.tagName==='SELECT')){
+    // 포커스 중인 요소의 식별자: id가 있으면 id, 없으면 onclick/oninput의 state key로 추정
+    if(ae.id){
+      focusInfo = {type:'id', key:ae.id, start:ae.selectionStart, end:ae.selectionEnd};
+    } else {
+      // id 없는 경우 — attribute 기반 식별 (oninput 안의 STATE.XXX.YYY 로)
+      const handler = ae.getAttribute('oninput') || ae.getAttribute('onchange') || '';
+      const m = handler.match(/STATE\.([a-zA-Z]+)\.([a-zA-Z]+)/);
+      if(m){
+        focusInfo = {type:'state', page:m[1], field:m[2], start:ae.selectionStart, end:ae.selectionEnd};
+      }
+    }
+  }
+
   currentPage=p; renderNav();
   const c=document.getElementById('content');
   const r=PAGES[p];
   c.innerHTML=r?r():'<div class="box">준비 중</div>';
+
+  // 재렌더 후 포커스 복원
+  if(focusInfo){
+    setTimeout(()=>{
+      let target = null;
+      if(focusInfo.type==='id'){
+        target = document.getElementById(focusInfo.key);
+      } else if(focusInfo.type==='state'){
+        // 동일한 STATE.page.field 를 가진 input 찾기
+        const selector = `input[oninput*="STATE.${focusInfo.page}.${focusInfo.field}"], input[onchange*="STATE.${focusInfo.page}.${focusInfo.field}"]`;
+        target = document.querySelector(selector);
+      }
+      if(target){
+        target.focus();
+        try{
+          if(focusInfo.start!=null && typeof target.setSelectionRange==='function'){
+            target.setSelectionRange(focusInfo.start, focusInfo.end);
+          }
+        }catch(e){}
+      }
+    }, 0);
+  }
 }
 function gotoSearch(q){STATE.search.q=q;STATE.search.selectedId=null;showPage('search')}
 function gotoFence(t){STATE.fences.tab=t;showPage('fences')}
@@ -629,6 +723,59 @@ function addHistory(type,action,detail,sid,pnum){
 function todayStr(){const t=new Date();return t.getFullYear()+'-'+String(t.getMonth()+1).padStart(2,'0')+'-'+String(t.getDate()).padStart(2,'0')}
 function nowStr(){const t=new Date();return todayStr()+' '+String(t.getHours()).padStart(2,'0')+':'+String(t.getMinutes()).padStart(2,'0')}
 function padDisplay(p){return `<span class="pad-num">${p.num}</span><span class="pad-model-small">${p.model||'A9'}</span>`}
+// 반 배지 (정규는 표시 안 함, 다른 반만 색깔 배지)
+function classBadge(st){
+  if(!st || !st.class || st.class==='정규') return '';
+  const colorMap = {'윈터':'badge-blue', '지파':'badge-teal'};
+  const cls = colorMap[st.class] || 'badge-gray';
+  return ` <span class="badge ${cls}">${st.class}</span>`;
+}
+// 학생 카드 헤더용 - 권한 있으면 클릭으로 반 변경 가능
+function classBadgeClickable(st){
+  if(!st) return '';
+  const canEdit = currentDept==='어드민' || currentRole==='관리자';
+  const cur = st.class || '정규';
+  const colorMap = {'윈터':'badge-blue', '지파':'badge-teal'};
+  const colorCls = cur==='정규' ? 'badge-gray' : (colorMap[cur] || 'badge-gray');
+  if(canEdit){
+    return ` <span class="badge ${colorCls}" style="cursor:pointer;text-decoration:underline dotted" onclick="cls_changeForStudent('${st.id}')" title="클릭하여 반 변경">${cur}</span>`;
+  }
+  // 권한 없으면 정규는 표시 안 함, 그 외만 표시
+  if(cur==='정규') return '';
+  return ` <span class="badge ${colorCls}">${cur}</span>`;
+}
+function cls_changeForStudent(sid){
+  const st = DATA.students[sid];
+  if(!st){toast('학생 없음','error');return}
+  const list = getAllClasses();
+  const cur = st.class || '정규';
+  openModal(`
+    <div class="modal-title">반 변경 — ${st.name}</div>
+    <div class="modal-desc">현재 반: <b>${cur}</b></div>
+    <div class="form-row">
+      <label>새 반</label>
+      <select id="cls_chg_select">
+        ${list.map(c=>`<option value="${c}" ${c===cur?'selected':''}>${c}</option>`).join('')}
+      </select>
+      <div class="form-hint">설정 → 반 관리에서 추가/수정 가능</div>
+    </div>
+    <div class="form-row"><label>변경 사유 (선택)</label><input id="cls_chg_reason" placeholder="예: 초기 입력 오류"></div>
+    <div class="modal-actions"><button class="btn" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="cls_doChangeForStudent('${sid}')">변경</button></div>
+  `);
+}
+function cls_doChangeForStudent(sid){
+  const st = DATA.students[sid];
+  if(!st){toast('학생 없음','error');return}
+  const newCls = document.getElementById('cls_chg_select').value;
+  const reason = (document.getElementById('cls_chg_reason').value||'').trim();
+  const oldCls = st.class || '정규';
+  if(newCls===oldCls){toast('동일한 반','error');closeModal();return}
+  st.class = newCls;
+  addHistory('학생','반변경',`${st.name}: ${oldCls} → ${newCls}${reason?' ('+reason+')':''}`,sid,null);
+  closeModal();
+  toast(`✓ ${st.name} 반: ${oldCls} → ${newCls}`,'success');
+  refreshCurrentPage();
+}
 
 function dateInRange(d,from,to){if(!d) return false; if(from&&d<from) return false; if(to&&d>to) return false; return true}
 function rangeOverlap(start,end,from,to){if(!from&&!to) return true; if(from&&end&&end<from) return false; if(to&&start&&start>to) return false; return true}
@@ -660,7 +807,7 @@ function openStudentModal(sid){
         ${p.assignedDate?`<span style="font-size:11px;color:var(--text-muted)">${p.assignedDate} · ${p.assignedBy||''}</span>`:''}
         ${p.startDate?`<span style="font-size:11px;color:var(--text-muted)">${p.startDate}~${p.endDate}${p.reason?' ('+p.reason+')':''}</span>`:''}
         ${pd?.status==='퇴원미반납'?'<span class="badge badge-red">퇴원 미반납</span>':''}
-        ${p.type==='무료'&&pd?.status==='대여중'&&isOverdueFree(pd)?'<span class="badge badge-red">연체 '+overdueDays(pd)+'일</span>':''}
+        ${p.type==='무료'&&pd?.status==='대여중'&&isOverdueFree(pd)?'<span class="badge badge-red">연체 '+overdueLabel(pd)+'</span>':''}
       </div>
       ${p.components?renderComponentDetail(p):''}
     </div>`;
@@ -830,11 +977,29 @@ function renderDashboard(){
 
 // ===== 검색 =====
 function renderSearch(){
+  const classes = getAllClasses();
+  // 초기 진입 시 statusFilter 미설정이면 '재원' 기본값
+  if(STATE.search.statusFilter===undefined||STATE.search.statusFilter===null){
+    STATE.search.statusFilter='재원';
+  }
+  const sf = STATE.search.statusFilter;
   return `
     <div class="page-header"><div class="page-title">학생·패드 검색</div></div>
     <div class="filter-bar-simple">
-      <input id="searchInput" style="flex:1;padding:11px 14px;border:1px solid var(--border);border-radius:8px;font-size:15px;font-family:inherit" placeholder="학생 이름 또는 패드번호 (예: 테스트1, 001, b5)" value="${STATE.search.q||''}" oninput="STATE.search.q=this.value;doSearch()">
-      <button class="btn" onclick="STATE.search.q='';document.getElementById('searchInput').value='';doSearch()">지우기</button>
+      <input id="searchInput" style="flex:1;min-width:200px;max-width:380px;padding:11px 14px;border:1px solid var(--border);border-radius:8px;font-size:15px;font-family:inherit" placeholder="학생 이름 또는 패드번호" value="${STATE.search.q||''}" oninput="STATE.search.q=this.value;doSearch()">
+      <select style="padding:11px 14px;border:1px solid var(--border);border-radius:8px;font-size:14px;font-family:inherit;min-width:90px" onchange="STATE.search.cls=this.value;doSearch()">
+        <option value="" ${!STATE.search.cls?'selected':''}>전체</option>
+        ${classes.map(c=>`<option value="${c}" ${STATE.search.cls===c?'selected':''}>${c}</option>`).join('')}
+      </select>
+      <select style="padding:11px 14px;border:1px solid var(--border);border-radius:8px;font-size:14px;font-family:inherit;min-width:90px" onchange="STATE.search.statusFilter=this.value;STATE.search.page=1;doSearch()">
+        <option value="" ${!sf?'selected':''}>전체</option>
+        <option value="재원" ${sf==='재원'?'selected':''}>재원</option>
+        <option value="대기" ${sf==='대기'?'selected':''}>대기</option>
+        <option value="퇴반" ${sf==='퇴반'?'selected':''}>퇴반</option>
+      </select>
+      <button class="btn" onclick="STATE.search.q='';STATE.search.cls='';STATE.search.statusFilter='';STATE.search.page=1;document.getElementById('searchInput').value='';doSearch()">지우기</button>
+      <div style="flex:1"></div>
+      <button class="btn btn-excel btn-sm" onclick="dlSearchExcel()">엑셀</button>
     </div>
     <div id="searchResult">${renderSearchResult()}</div>`;
 }
@@ -857,13 +1022,35 @@ function selectStudentFromList(sid){
 }
 function renderSearchResult(){
   const q=(STATE.search.q||'').trim();
-  if(!q){
+  const cls=STATE.search.cls||'';
+  const sf=STATE.search.statusFilter||'';
+  // 모두 비었을 때만 안내 메시지 (재원 기본값일 때는 결과 표시)
+  if(!q && !cls && !sf){
     STATE.search.selectedId=null;
     return '<div class="box" style="text-align:center;color:var(--text-muted);padding:20px">🔍 학생 이름 또는 패드번호를 입력하세요.<br><span style="font-size:12px">예: "테스트1", "001", "b5", "783"</span></div>';
   }
   const ql=q.toLowerCase();
-  // 학생 이름 검색 (부분일치, 한글 포함)
-  const students=Object.values(DATA.students).filter(st=>st.name.toLowerCase().includes(ql));
+  // 학생 이름 검색 (부분일치, 한글 포함) + 반 필터 + 상태 필터
+  let students=Object.values(DATA.students).filter(st=>{
+    if(q && !st.name.toLowerCase().includes(ql)) return false;
+    if(cls && (st.class||'정규')!==cls) return false;
+    if(sf){
+      // 새 상태 필터 옵션: 재원 / 대기 / 퇴반
+      if(sf==='재원'){
+        // 재원만 (퇴원/환불대기/완료 모두 제외)
+        if(st.status!=='재원') return false;
+      } else if(sf==='대기'){
+        // 대기 = 퇴원 미반납 + 환불대기
+        const isUnreturned = st.status==='퇴원' && (st.pads||[]).find(p=>p.type==='월납'&&!p.archived);
+        const isRefundWait = st.status==='환불대기';
+        if(!isUnreturned && !isRefundWait) return false;
+      } else if(sf==='퇴반'){
+        // 퇴반 = 환불완료 (이력 보존)
+        if(!st.refundCompletedDate) return false;
+      }
+    }
+    return true;
+  });
 
   // 학생 1명만 매칭 → 바로 상세 카드
   if(students.length===1){
@@ -885,14 +1072,34 @@ function renderSearchResult(){
     return back+renderStudentCard(sel);
   }
 
-  // 학생 여러 명 매칭 → 클릭 가능 리스트
+  // 정렬: 재원이면 ㄱㄴㄷ순 / 그 외는 기본
+  if(sf==='재원'){
+    students.sort((a,b)=>(a.name||'').localeCompare(b.name||'','ko'));
+  } else if(sf==='퇴반'){
+    // 퇴반은 최근 처리순 (refundCompletedDate 최신 먼저)
+    students.sort((a,b)=>(b.refundCompletedDate||'').localeCompare(a.refundCompletedDate||''));
+  } else if(sf==='대기'){
+    // 대기는 회수 오래된 순 (오래 기다린 사람 먼저)
+    students.sort((a,b)=>(a.tuebanDate||'').localeCompare(b.tuebanDate||''));
+  } else {
+    // 기본: 이름 ㄱㄴㄷ
+    students.sort((a,b)=>(a.name||'').localeCompare(b.name||'','ko'));
+  }
+
+  // 학생 여러 명 매칭 → 페이지네이션 (100명/페이지)
   if(students.length>1){
     STATE.search.selectedId=null;
+    const pageSize = 100;
+    const page = STATE.search.page || 1;
+    const totalPages = Math.ceil(students.length/pageSize);
+    const startIdx = (page-1)*pageSize;
+    const pageStudents = students.slice(startIdx, startIdx+pageSize);
     return `<div class="box" style="padding:0;overflow:hidden">
-      <div style="font-size:14px;font-weight:700;padding:12px 16px;background:#fafaf5;border-bottom:2px solid var(--border)">
-        🔍 검색 결과 <span style="color:var(--primary)">${students.length}</span>명 — 학생을 클릭하세요
+      <div style="font-size:14px;font-weight:700;padding:12px 16px;background:#fafaf5;border-bottom:2px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <div>🔍 검색 결과 <span style="color:var(--primary)">${students.length}</span>명 — 학생을 클릭하세요</div>
+        ${totalPages>1?`<div style="font-size:12px;color:var(--text-muted)">${page} / ${totalPages} 페이지</div>`:''}
       </div>
-      ${students.slice(0,50).map(s=>{
+      ${pageStudents.map(s=>{
         const si=getStudentDisplayStatus(s);
         const typeList=[...new Set(s.pads.filter(p=>!p.archived).map(p=>p.type))].join('·');
         const freeDone=(DATA.freeHistory||[]).filter(h=>h.studentId===s.id).length;
@@ -902,7 +1109,7 @@ function renderSearchResult(){
         return `<div class="search-row" style="padding:14px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:10px;cursor:pointer" onclick="selectStudentFromList('${s.id}')" onmouseover="this.style.background='#f5f5f0'" onmouseout="this.style.background=''">
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0">
             <b style="font-size:16px">${s.name}</b>
-            <span class="badge ${si.cls}">${si.label}</span>
+            <span class="badge ${si.cls}">${si.label}</span>${classBadge(s)}
           </div>
           <div style="color:var(--text-muted);font-size:12px;text-align:right;white-space:nowrap">
             ${activePadCnt?`<span style="color:var(--primary);font-weight:600">패드 ${activePadCnt}개</span>${typeList?' ('+typeList+')':''}`:'패드 없음'}
@@ -911,7 +1118,11 @@ function renderSearchResult(){
           </div>
         </div>`;
       }).join('')}
-      ${students.length>50?`<div style="padding:14px;text-align:center;color:var(--text-muted);font-size:12px">총 ${students.length}명 중 50명만 표시 — 더 정확한 이름으로 검색하세요</div>`:''}
+      ${totalPages>1?`<div style="padding:14px;text-align:center;background:#fafaf5;border-top:1px solid var(--border);display:flex;justify-content:center;align-items:center;gap:8px">
+        <button class="btn btn-sm" ${page<=1?'disabled':''} onclick="STATE.search.page=${page-1};doSearch()">← 이전</button>
+        <span style="font-size:13px;color:var(--text-muted)">${startIdx+1}–${Math.min(startIdx+pageSize,students.length)} / ${students.length}명</span>
+        <button class="btn btn-sm" ${page>=totalPages?'disabled':''} onclick="STATE.search.page=${page+1};doSearch()">다음 →</button>
+      </div>`:''}
     </div>`;
   }
 
@@ -949,8 +1160,13 @@ function getStudentDisplayStatus(st){
   if(st.status==='재원') return {cls:'badge-green', label:'재원', key:'재원'};
   if(st.status==='환불대기') return {cls:'badge-yellow', label:'환불 대기', key:'환불대기'};
   if(st.status==='퇴원'){
-    // 환불 완료되었으면 → 퇴원 완료
-    if(st.refundCompletedDate) return {cls:'badge-gray', label:'퇴원 완료', key:'퇴원완료'};
+    // 환불 완료되었으면 → 환불 거친 학생인지 확인 (월납)
+    if(st.refundCompletedDate){
+      // 월납 패드가 있었으면 → 퇴원완료(환불완료)
+      const hadMonthly = (st.pads||[]).some(p=>p.type==='월납');
+      if(hadMonthly) return {cls:'badge-gray', label:'퇴원완료(환불완료)', key:'퇴원완료'};
+      return {cls:'badge-gray', label:'퇴원 완료', key:'퇴원완료'};
+    }
     // 월납 패드가 아직 회수 안 됐으면 → 퇴원 미반납
     const mp=(st.pads||[]).find(p=>p.type==='월납'&&!p.archived);
     if(mp){
@@ -1007,7 +1223,7 @@ function renderStudentCard(st){
     <div style="padding-bottom:16px;border-bottom:2px solid var(--border);margin-bottom:16px;display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">
       <div>
         <div style="font-size:22px;font-weight:800;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-          ${st.name} ${idBadges} ${statusBadge}
+          ${st.name} ${idBadges} ${statusBadge}${classBadgeClickable(st)}
         </div>
         <div style="font-size:12px;color:var(--text-muted);margin-top:6px">${subInfo}</div>
       </div>
@@ -1107,8 +1323,10 @@ function renderStudentPadBar(st, p){
   if(fence) infoLines.push(`펜스 ${fence.num} (${fence.status})`);
   if(p.assignedDate) infoLines.push(`배부 ${p.assignedDate}${p.assignedBy?' · '+p.assignedBy:''}`);
   if(p.startDate&&p.type==='무료'){
-    const overdueDaysNum = isOverdue ? Math.floor((Date.now()-new Date(p.endDate).getTime())/86400000) : 0;
-    infoLines.push(`${p.startDate}~${p.endDate}${overdueDaysNum>0?' ⚠ '+overdueDaysNum+'일 경과':''}${p.reason?' · 사유: '+p.reason:''}`);
+    const src = DATA.pads[p.num] || p;
+    const overdueLbl = (typeof overdueLabel==='function' && isOverdueFree(src)) ? overdueLabel(src) : '';
+    const durLbl = p.duration ? ` · 사용 ${p.duration<60?p.duration+'분':(p.duration/60)+'시간'+(p.duration%60?' '+(p.duration%60)+'분':'')}` : '';
+    infoLines.push(`${p.startDate}~${p.endDate}${durLbl}${overdueLbl?' ⚠ '+overdueLbl:''}${p.reason?' · 사유: '+p.reason:''}`);
   }
   // 월납 퇴원/환불 단계 정보 (응대 시 필수)
   if(p.type==='월납'){
@@ -1243,7 +1461,14 @@ function openFreeRentForStudent(sid){
     fr_openNew();
     setTimeout(()=>{
       const nameInp=document.getElementById('fr_name');
-      if(nameInp){nameInp.value=st.name;nameInp.disabled=true}
+      if(nameInp){
+        nameInp.value=st.name;
+        nameInp.readOnly=true;  // disabled 대신 readOnly (값 저장 가능)
+        nameInp.style.background='#f5f5f5';
+        // hint 업데이트
+        const hint=document.getElementById('fr_nameHint');
+        if(hint){hint.textContent='기존 학생 (고정)';hint.className='form-hint ok'}
+      }
     },50);
   }
 }
@@ -1328,7 +1553,15 @@ function doRefundRequest(sid){
   if(!st){toast('학생 없음','error');return}
   if(st.status!=='환불대기'){toast('환불대기 상태만 가능','error');return}
   if(!(currentDept==='스타터'||currentDept==='어드민')){toast('스타터/어드민 권한 필요','error');return}
-  ask('환불 완료 처리',`<b>${st.name}</b> 학생의 환불을 완료 처리합니다.<br>패드는 이미 회수되어 창고 재고에 포함되어 있습니다.`,'환불 완료','primary',()=>{
+  const p=st.pads.find(pp=>pp.type==='월납'&&!pp.archived)||st.pads.find(pp=>pp.type==='신규'&&!pp.archived)||st.pads[0];
+  ask('환불 완료 처리',
+    `<div style="padding:8px 0">
+      <div style="font-size:15px;margin-bottom:10px"><b>${st.name}</b> 학생의 환불을 완료 처리합니다.</div>
+      <div style="background:#fef3c7;border:1px solid #fbbf24;padding:10px;border-radius:6px;font-size:13px;line-height:1.6">
+        ${p?.type==='월납'?'• 월납 패드 <b>'+p.num+'</b>: 이미 창고에 있음 (반납 완료 시 이동됨)<br>• 학생 상태: 환불대기 → <b>퇴원완료(환불완료)</b>':'• 학생 상태: 환불대기 → <b>퇴원완료</b>'}
+      </div>
+    </div>`,
+    '환불 완료','primary',()=>{
     const refundDate=todayStr();
     // 환불 완료 = 퇴원의 최종 단계 (재원 아님)
     st.status='퇴원';
@@ -1353,7 +1586,7 @@ function doRefundRequest(sid){
     // 학생 패드 배열은 유지 (filter 제거) - archived 플래그로 현재/과거 구분
     addHistory('월납','환불완료',`${st.name} · 환불 완료 처리`,sid);
     closeModal();
-    toast('환불 완료 처리되었습니다','success');
+    toast(`✓ ${st.name} 환불 완료 처리됨`,'success');
     refreshCurrentPage();
   });
 }
@@ -1664,6 +1897,22 @@ function renderTuebanTab(){
   const inProgress=Object.values(DATA.students).filter(st=>(st.status==='퇴원'||st.status==='환불대기')&&st.pads.some(p=>p.type==='월납'));
   let list=inProgress;
   if(M.tuebanQ){const q=M.tuebanQ.toLowerCase();list=list.filter(st=>st.name.toLowerCase().includes(q))}
+  if(M.tuebanCls){list=list.filter(st=>(st.class||'정규')===M.tuebanCls)}
+  // 상태 필터: 퇴원미반납 / 환불대기
+  if(M.tuebanStatus){
+    if(M.tuebanStatus==='퇴원미반납'){list=list.filter(st=>st.status==='퇴원')}
+    else if(M.tuebanStatus==='환불대기'){list=list.filter(st=>st.status==='환불대기')}
+  }
+  // 정렬
+  const sortType = M.tuebanSort || 'completeOld';
+  list.sort((a,b)=>{
+    if(sortType==='nameAsc') return (a.name||'').localeCompare(b.name||'','ko');
+    const ca=a.completeDate||a.tuebanDate||'';
+    const cb=b.completeDate||b.tuebanDate||'';
+    if(sortType==='completeNew') return cb.localeCompare(ca);
+    return ca.localeCompare(cb);
+  });
+  const classes = getAllClasses();
   return `
     <div class="box" style="margin-bottom:16px">
       <div class="box-title">월납 학생 퇴원 처리</div>
@@ -1674,10 +1923,13 @@ function renderTuebanTab(){
         <div id="tueban_candidates"></div>
       </div>
     </div>
-    <div class="section-label">퇴원 진행 중 (${inProgress.length}명)</div>
-    <div class="filter-bar-simple">
-      <input style="flex:1;padding:11px 14px;border:1px solid var(--border);border-radius:8px;font-size:14px;font-family:inherit" placeholder="학생명 검색" value="${M.tuebanQ||''}" oninput="STATE.monthlyAssign.tuebanQ=this.value;showPage('monthlyAssign')">
-      <button class="btn" onclick="STATE.monthlyAssign.tuebanQ='';showPage('monthlyAssign')">초기화</button>
+    <div class="section-label">퇴원 진행 중 (${list.length}명${M.tuebanCls||M.tuebanQ||M.tuebanStatus?` · 전체 ${inProgress.length}명 중`:''})</div>
+    <div class="filter-bar" style="grid-template-columns:1.5fr 0.8fr 0.9fr 0.8fr auto">
+      <div class="filter-field"><label>학생 검색</label><input value="${M.tuebanQ||''}" placeholder="학생명" oninput="STATE.monthlyAssign.tuebanQ=this.value;showPage('monthlyAssign')"></div>
+      <div class="filter-field"><label>반</label><select onchange="STATE.monthlyAssign.tuebanCls=this.value;showPage('monthlyAssign')"><option value="" ${!M.tuebanCls?'selected':''}>전체</option>${classes.map(c=>`<option value="${c}" ${M.tuebanCls===c?'selected':''}>${c}</option>`).join('')}</select></div>
+      <div class="filter-field"><label>상태</label><select onchange="STATE.monthlyAssign.tuebanStatus=this.value;showPage('monthlyAssign')"><option value="" ${!M.tuebanStatus?'selected':''}>전체</option><option value="퇴원미반납" ${M.tuebanStatus==='퇴원미반납'?'selected':''}>퇴원 미반납</option><option value="환불대기" ${M.tuebanStatus==='환불대기'?'selected':''}>환불대기</option></select></div>
+      <div class="filter-field"><label>정렬</label><select onchange="STATE.monthlyAssign.tuebanSort=this.value;showPage('monthlyAssign')"><option value="completeOld" ${sortType==='completeOld'?'selected':''}>회수순</option><option value="nameAsc" ${sortType==='nameAsc'?'selected':''}>이름순</option></select></div>
+      <div class="filter-field"><label>&nbsp;</label><button class="btn btn-sm" onclick="STATE.monthlyAssign.tuebanQ='';STATE.monthlyAssign.tuebanCls='';STATE.monthlyAssign.tuebanStatus='';STATE.monthlyAssign.tuebanSort='completeOld';showPage('monthlyAssign')">초기화</button></div>
     </div>
     <table class="tbl"><thead><tr><th>학생</th><th>상태</th><th>퇴원일</th><th>패드</th><th>회수 진행</th><th>작업</th></tr></thead><tbody>
       ${list.length?list.map(st=>{
@@ -1686,7 +1938,7 @@ function renderTuebanTab(){
         const done=comps.filter(c=>mp.leased?.[c]&&(mp.returned?.[c]?.done||mp.returned?.[c]?.deducted)).length;
         const total=comps.filter(c=>mp.leased?.[c]).length;
         return `<tr>
-          <td><span class="clickable" onclick="openStudentModal('${st.id}')">${st.name}</span></td>
+          <td><span class="clickable" onclick="openStudentModal('${st.id}')">${st.name}</span>${classBadge(st)}</td>
           <td><span class="badge badge-${st.status==='환불대기'?'yellow':'red'}">${st.status==='환불대기'?'환불대기':'퇴원 미반납'}</span></td>
           <td>${st.tuebanDate||'—'}<br><span style="font-size:11px;color:var(--text-muted)">${st.tuebanBy||''}</span></td>
           <td>${mp?padDisplay(mp):'—'}</td>
@@ -1721,12 +1973,19 @@ function renderAssignSingle(type){
   return `
   <div class="box">
     <div class="box-title">건바이건 ${type==='신규'?'배부':'대여'}</div>
-    <div class="form-row-inline">
+    <div class="form-row-inline cols-3">
       <div class="form-row">
         <label>패드 번호<span class="req">*</span></label>
         <input id="as_pad" placeholder="예: ${isNew?'631':'b101'}" list="as_pad_list" oninput="as_onPadInput('${type}')">
         <datalist id="as_pad_list">${stock.slice(0,50).map(p=>`<option value="${p.num}">`).join('')}</datalist>
-        <div class="form-hint" id="as_padHint">바로 배부 가능 ${stock.length}대 (펜스 매칭된 창고)</div>
+        <div class="form-hint" id="as_padHint">바로 배부 가능 ${stock.length}대</div>
+      </div>
+      <div class="form-row">
+        <label>반<span class="req">*</span></label>
+        <select id="as_class">
+          ${getAllClasses().map(c=>`<option value="${c}" ${c==='정규'?'selected':''}>${c}</option>`).join('')}
+        </select>
+        <div class="form-hint">새 반은 [설정 → 반 관리]</div>
       </div>
       <div class="form-row">
         <label>학생 이름<span class="req">*</span></label>
@@ -1820,8 +2079,13 @@ function as_onFenceType(){
 function as_save(type){
   const name=document.getElementById('as_name').value.trim();
   const num=document.getElementById('as_pad').value.trim();
+  const cls = document.getElementById('as_class')?.value || '정규';
   if(!num){toast('패드번호 필수','error');return}
   if(!name){toast('학생 이름 필수 — 이름 없이 등록은 엑셀 업로드 이용','error');return}
+  if(!cls){toast('반 선택 필수','error');return}
+  // 등록된 반인지 확인
+  const validClasses = DATA._classes || ['정규'];
+  if(!validClasses.includes(cls)){toast(`등록되지 않은 반 "${cls}". 설정 → 반 관리에서 먼저 추가`,'error');return}
   const p=DATA.pads[num];
   if(!p||p.type!==type||p.status!=='창고'){toast('배부 불가 (창고 상태만 가능)','error');return}
   if(!p.fenceNum){toast('펜스 없는 패드 — 펜스 관리에서 먼저 매칭하세요','error');return}
@@ -1850,20 +2114,21 @@ function as_save(type){
     if(anyUn){leaseMemo=(document.getElementById('as_leaseMemo').value||'').trim();if(!leaseMemo){toast('미대여 사유 메모 필수','error');return}}
   }
   const padStatus=type==='신규'?'배부':'대여중';
-  DATA.students[name]={id:name,name,status:'재원',pads:[{type,num,model:p.model,fenceNum,assignedDate:dateStr,assignedBy:currentUser,components,leased,returned,leaseMemo:leaseMemo||undefined}]};
+  DATA.students[name]={id:name,name,class:cls,status:'재원',pads:[{type,num,model:p.model,fenceNum,assignedDate:dateStr,assignedBy:currentUser,components,leased,returned,leaseMemo:leaseMemo||undefined}]};
   p.status=padStatus;p.studentId=name;p.fenceNum=fenceNum;p.assignedDate=dateStr;p.assignedBy=currentUser;
   DATA.fences[fenceNum]={num:fenceNum,type,status:'사용중',padNum:num,studentId:name};
   DATA.assignHistory.unshift({id:'ah_'+Date.now(),type,padNum:num,studentId:name,fenceNum,assignedDate:dateStr,assignedBy:currentUser,method:'단건',memo:leaseMemo||''});
-  addHistory(type,'배부',`${name} · ${num}${leaseMemo?' ('+leaseMemo+')':''}`,name,num);
-  toast(`${name}에게 ${num} ${type==='신규'?'배부':'대여'} 완료`,'success');
+  addHistory(type,'배부',`${name} (${cls}) · ${num}${leaseMemo?' ('+leaseMemo+')':''}`,name,num);
+  toast(`${name}(${cls})에게 ${num} ${type==='신규'?'배부':'대여'} 완료`,'success');
   showPage(type==='신규'?'newAssign':'monthlyAssign');
 }
 
 /* 재고 번호 엑셀 다운로드 (이름 매칭용 템플릿) */
 function dlStockTemplate(type){
   const stock=Object.values(DATA.pads).filter(p=>p.type===type&&p.status==='창고'&&!p.studentId&&p.fenceNum);
-  const rows=[['패드번호','펜스번호','학생이름 (여기에 입력)']];
-  stock.forEach(p=>rows.push([p.num,p.fenceNum||p.num,'']));
+  const classList = (DATA._classes||['정규']).join('/');
+  const rows=[['패드번호','펜스번호','학생이름 (여기에 입력)',`반 (${classList} 중 선택)`]];
+  stock.forEach(p=>rows.push([p.num,p.fenceNum||p.num,'','정규']));
   downloadCSV(`${type}_재고번호_이름매칭용_${todayStr()}.csv`,rows);
 }
 
@@ -1875,7 +2140,7 @@ function renderAssignExcel(type){
       <div class="page-actions" style="margin-bottom:14px">
         ${Object.values(DATA.pads).filter(p=>p.type===type&&p.status==='창고'&&!p.studentId).length>0?`<button class="btn btn-excel" onclick="dlStockTemplate('${type}')">현재 창고 번호 다운로드</button>`:'<span style="font-size:12px;color:var(--text-muted)">※ 창고 재고 없음. 먼저 [설정 → 패드 입고]에서 입고.</span>'}
       </div>
-      <div class="form-row"><label>CSV 파일 (패드번호, 펜스번호, 학생이름)</label><input type="file" id="as_file" accept=".csv,.txt"></div>
+      <div class="form-row"><label>CSV 파일 (패드번호, 펜스번호, 학생이름, 반)</label><input type="file" id="as_file" accept=".csv,.txt"></div>
       <div class="page-actions">
         <button class="btn btn-primary" onclick="as_upload('${type}')">업로드 실행</button>
       </div>
@@ -1883,7 +2148,7 @@ function renderAssignExcel(type){
     </div>`;
 }
 function as_template(type){
-  const rows = [['패드번호','펜스번호','학생이름'],[type==='신규'?'625':'b81',type==='신규'?'625':'b81','홍길동'],[type==='신규'?'626':'b82',type==='신규'?'626':'b82','']];
+  const rows = [['패드번호','펜스번호','학생이름','반'],[type==='신규'?'625':'b81',type==='신규'?'625':'b81','홍길동','정규'],[type==='신규'?'626':'b82',type==='신규'?'626':'b82','','정규']];
   downloadCSV(type+'_양식_'+todayStr()+'.csv',rows);
 }
 function as_upload(type){
@@ -1895,7 +2160,7 @@ function as_upload(type){
     if(lines.length<=1){toast('데이터 없음','error');return}
     let matched=0,skipped=0,errs=[];
     lines.slice(1).forEach((ln,idx)=>{
-      const [padNum,fenceNum,name,modelInput]=ln.split(',').map(x=>x?.replace(/^"|"$/g,'').trim()||'');
+      const [padNum,fenceNum,name,clsRaw,modelInput]=ln.split(',').map(x=>x?.replace(/^"|"$/g,'').trim()||'');
       if(!padNum) return;
       let p=DATA.pads[padNum];
       const fnum=fenceNum||padNum;
@@ -1914,11 +2179,23 @@ function as_upload(type){
         return;
       }
 
+      // 반 검증: 빈칸 거부 + 등록된 반만 허용
+      if(!clsRaw){
+        errs.push(`${idx+2}행: ${name} - <b>반이 비어있음</b> (등록된 반: ${(DATA._classes||[]).join('/')})`);
+        return;
+      }
+      const validClasses = DATA._classes || ['정규'];
+      if(!validClasses.includes(clsRaw)){
+        errs.push(`${idx+2}행: ${name} - 등록되지 않은 반 "<b>${clsRaw}</b>" (허용: ${validClasses.join('/')}) → 설정 → 반 관리에서 먼저 추가하세요`);
+        return;
+      }
+      const cls = clsRaw;
+
       if(DATA.students[name]){errs.push(`${idx+2}행: 중복 학생 ${name}`);return}
       const comps=(MODELS[p.model]||['본체','충전기']).concat(['파손확인']);
       const leased={},returned={};
       comps.forEach(c=>{leased[c]=true;returned[c]={done:false,memos:[]}});
-      DATA.students[name]={id:name,name,status:'재원',pads:[{type,num:padNum,model:p.model,fenceNum:fnum,assignedDate:dateStr,assignedBy:currentUser,components:comps,leased,returned}]};
+      DATA.students[name]={id:name,name,class:cls,status:'재원',pads:[{type,num:padNum,model:p.model,fenceNum:fnum,assignedDate:dateStr,assignedBy:currentUser,components:comps,leased,returned}]};
       p.status=type==='신규'?'배부':'대여중';p.studentId=name;p.fenceNum=fnum;p.assignedDate=dateStr;p.assignedBy=currentUser;
       DATA.fences[fnum]={num:fnum,type,status:'사용중',padNum,studentId:name};
       DATA.assignHistory.unshift({id:'ah_'+Date.now()+'_'+idx,type,padNum,studentId:name,fenceNum:fnum,assignedDate:dateStr,assignedBy:currentUser,method:'엑셀'});
@@ -1935,13 +2212,18 @@ function as_upload(type){
 function renderUnmatched(type){
   const pads=Object.values(DATA.pads).filter(p=>p.type===type&&!p.studentId&&(p.status==='창고'||p.status==='미지정'));
   if(!pads.length) return '<div class="tbl-empty" style="padding:20px">없음</div>';
-  return `<table class="tbl"><thead><tr><th>패드</th><th>기종</th><th>펜스</th><th>학생 매칭</th></tr></thead><tbody>
-    ${pads.slice(0,100).map(p=>`<tr><td><b>${p.num}</b></td><td>${p.model||'A9'}</td><td>${p.fenceNum||'—'}</td><td><input id="um_${p.num}" placeholder="학생이름" style="padding:4px 8px;border:1px solid var(--border);border-radius:5px;font-size:13px;font-family:inherit"> <button class="btn btn-sm btn-primary" onclick="matchStu('${p.num}','${type}')">매칭</button></td></tr>`).join('')}
+  const classes = getAllClasses();
+  return `<table class="tbl"><thead><tr><th>패드</th><th>기종</th><th>펜스</th><th>학생 매칭 (이름 + 반)</th></tr></thead><tbody>
+    ${pads.slice(0,100).map(p=>`<tr><td><b>${p.num}</b></td><td>${p.model||'A9'}</td><td>${p.fenceNum||'—'}</td><td><input id="um_${p.num}" placeholder="학생이름" style="padding:4px 8px;border:1px solid var(--border);border-radius:5px;font-size:13px;font-family:inherit;width:100px"> <select id="umc_${p.num}" style="padding:4px 8px;border:1px solid var(--border);border-radius:5px;font-size:13px;font-family:inherit">${classes.map(c=>`<option value="${c}" ${c==='정규'?'selected':''}>${c}</option>`).join('')}</select> <button class="btn btn-sm btn-primary" onclick="matchStu('${p.num}','${type}')">매칭</button></td></tr>`).join('')}
   </tbody></table>`;
 }
 function matchStu(padNum,type){
   const name=document.getElementById('um_'+padNum).value.trim();
+  const cls=document.getElementById('umc_'+padNum).value||'정규';
   if(!name){toast('이름 필수','error');return}
+  // 등록된 반 검증
+  const validClasses = DATA._classes || ['정규'];
+  if(!validClasses.includes(cls)){toast(`등록되지 않은 반 "${cls}"`,'error');return}
   if(DATA.students[name]){toast('중복','error');return}
   const p=DATA.pads[padNum];
   const fnum=p.fenceNum||padNum;
@@ -1949,12 +2231,12 @@ function matchStu(padNum,type){
   const comps=(MODELS[p.model]||['본체','충전기']).concat(['파손확인']);
   const leased={},returned={};
   comps.forEach(c=>{leased[c]=true;returned[c]={done:false,memos:[]}});
-  DATA.students[name]={id:name,name,status:'재원',pads:[{type:p.type,num:padNum,model:p.model,fenceNum:fnum,assignedDate:dateStr,assignedBy:currentUser,components:comps,leased,returned}]};
+  DATA.students[name]={id:name,name,class:cls,status:'재원',pads:[{type:p.type,num:padNum,model:p.model,fenceNum:fnum,assignedDate:dateStr,assignedBy:currentUser,components:comps,leased,returned}]};
   p.status=type==='신규'?'배부':'대여중';p.studentId=name;p.assignedDate=dateStr;p.assignedBy=currentUser;
   if(DATA.fences[fnum]){DATA.fences[fnum].status='사용중';DATA.fences[fnum].studentId=name}
   else DATA.fences[fnum]={num:fnum,type,status:'사용중',padNum,studentId:name};
   DATA.assignHistory.unshift({id:'ah_'+Date.now(),type,padNum,studentId:name,fenceNum:fnum,assignedDate:dateStr,assignedBy:currentUser,method:'매칭'});
-  addHistory(type,'배부',name+' · '+padNum,name,padNum);
+  addHistory(type,'배부',name+' ('+cls+') · '+padNum,name,padNum);
   toast(name+' 매칭 완료','success');
   showPage(type==='신규'?'newAssign':'monthlyAssign');
 }
@@ -1963,20 +2245,53 @@ function renderAssignHistory(type){
   const ST=STATE[stateKey];
   let list=DATA.assignHistory.filter(h=>h.type===type);
   if(ST.histQ){const q=ST.histQ.toLowerCase();list=list.filter(h=>h.studentId?.toLowerCase().includes(q)||h.padNum.toLowerCase().includes(q)||h.assignedBy?.toLowerCase().includes(q))}
+  if(ST.histCls){list=list.filter(h=>{const st=DATA.students[h.studentId];return st && (st.class||'정규')===ST.histCls})}
   if(ST.histFrom||ST.histTo) list=list.filter(h=>dateInRange(h.assignedDate,ST.histFrom,ST.histTo));
   const show=list.slice(0,ST.limit);
+  const classes = getAllClasses();
   return `
-    <div class="filter-bar">
+    <div class="filter-bar" style="grid-template-columns:1.5fr 0.8fr 0.8fr 0.8fr auto auto">
       <div class="filter-field"><label>검색 (학생/패드/담당)</label><input value="${ST.histQ||''}" oninput="STATE.${stateKey}.histQ=this.value;showPage('${stateKey}')"></div>
+      <div class="filter-field"><label>반</label><select onchange="STATE.${stateKey}.histCls=this.value;showPage('${stateKey}')"><option value="" ${!ST.histCls?'selected':''}>전체</option>${classes.map(c=>`<option value="${c}" ${ST.histCls===c?'selected':''}>${c}</option>`).join('')}</select></div>
       <div class="filter-field"><label>from</label><input type="date" value="${ST.histFrom||''}" onchange="STATE.${stateKey}.histFrom=this.value;showPage('${stateKey}')"></div>
       <div class="filter-field"><label>to</label><input type="date" value="${ST.histTo||''}" onchange="STATE.${stateKey}.histTo=this.value;showPage('${stateKey}')"></div>
-      <div class="filter-field"><label>&nbsp;</label><button class="btn" onclick="STATE.${stateKey}.histQ='';STATE.${stateKey}.histFrom='';STATE.${stateKey}.histTo='';showPage('${stateKey}')">초기화</button></div>
-      <div class="filter-field"><label>&nbsp;</label><button class="btn btn-excel" onclick="dlAssignHist('${type}')">엑셀</button></div>
+      <div class="filter-field"><label>&nbsp;</label><button class="btn btn-sm" onclick="STATE.${stateKey}.histQ='';STATE.${stateKey}.histCls='';STATE.${stateKey}.histFrom='';STATE.${stateKey}.histTo='';showPage('${stateKey}')">초기화</button></div>
+      <div class="filter-field"><label>&nbsp;</label><button class="btn btn-excel btn-sm" onclick="dlAssignHist('${type}')">엑셀</button></div>
     </div>
     <table class="tbl"><thead><tr><th>배부일</th><th>학생</th><th>패드</th><th>펜스</th><th>방법</th><th>담당</th><th>메모</th></tr></thead><tbody>
-      ${show.length?show.map(h=>`<tr><td>${h.assignedDate}</td><td><span class="clickable" onclick="openStudentModal('${h.studentId}')">${h.studentId}</span></td><td><b>${h.padNum}</b></td><td>${h.fenceNum}</td><td><span class="badge badge-gray">${h.method||''}</span></td><td>${h.assignedBy}</td><td style="font-size:11px;color:var(--text-muted)">${h.memo||''}</td></tr>`).join(''):'<tr><td colspan="7" class="tbl-empty">이력 없음</td></tr>'}
+      ${show.length?show.map(h=>`<tr><td>${h.assignedDate}</td><td><span class="clickable" onclick="openStudentModal('${h.studentId}')">${h.studentId}</span>${classBadge(DATA.students[h.studentId])}</td><td><b>${h.padNum}</b></td><td>${h.fenceNum}</td><td><span class="badge badge-gray">${h.method||''}</span></td><td>${h.assignedBy}</td><td style="font-size:11px;color:var(--text-muted)">${h.memo||''}</td></tr>`).join(''):'<tr><td colspan="7" class="tbl-empty">이력 없음</td></tr>'}
     </tbody></table>
     ${list.length>ST.limit?`<div class="load-more-wrap">총 ${list.length}건 중 ${show.length}건<br><button class="btn" onclick="STATE.${stateKey}.limit+=20;showPage('${stateKey}')">더 보기</button></div>`:''}`;
+}
+function dlSearchExcel(){
+  // 현재 검색 결과 엑셀로
+  const q=(STATE.search.q||'').trim();
+  const cls=STATE.search.cls||'';
+  const sf=STATE.search.statusFilter||'';
+  const ql=q.toLowerCase();
+  let students=Object.values(DATA.students).filter(st=>{
+    if(q && !st.name.toLowerCase().includes(ql)) return false;
+    if(cls && (st.class||'정규')!==cls) return false;
+    if(sf){
+      if(sf==='재원'){if(st.status!=='재원') return false;}
+      else if(sf==='대기'){
+        const isUnreturned = st.status==='퇴원' && (st.pads||[]).find(p=>p.type==='월납'&&!p.archived);
+        const isRefundWait = st.status==='환불대기';
+        if(!isUnreturned && !isRefundWait) return false;
+      } else if(sf==='퇴반'){if(!st.refundCompletedDate) return false;}
+    }
+    return true;
+  });
+  // 정렬
+  if(sf==='퇴반'){students.sort((a,b)=>(b.refundCompletedDate||'').localeCompare(a.refundCompletedDate||''))}
+  else students.sort((a,b)=>(a.name||'').localeCompare(b.name||'','ko'));
+  const rows=[['학생','반','상태','패드(종류·번호)','퇴원일','환불완료일']];
+  students.forEach(st=>{
+    const si=getStudentDisplayStatus(st);
+    const padInfo=(st.pads||[]).filter(p=>!p.archived).map(p=>p.type+'·'+p.num).join(' / ');
+    rows.push([st.name, st.class||'정규', si.label, padInfo||'-', st.tuebanDate||'', st.refundCompletedDate||'']);
+  });
+  downloadCSV('학생검색_'+todayStr()+'.csv',rows);
 }
 function dlAssignHist(type){
   const list=DATA.assignHistory.filter(h=>h.type===type);
@@ -2296,13 +2611,13 @@ function renderFreeRent(){
     </div>
     ${overdue.length?`
       <div class="section-label" style="color:var(--danger)">미반납 (우선 처리)</div>
-      <table class="tbl section"><thead><tr><th>학생</th><th>패드</th><th>대여일</th><th>반납예정</th><th>사유</th><th>상태</th></tr></thead><tbody>
-        ${overdue.map(p=>`<tr><td><span class="clickable" onclick="openStudentModal('${p.studentId}')">${p.studentId}</span></td><td>${padDisplay(p)}</td><td>${p.startDate}</td><td style="color:var(--danger);font-weight:700">${p.endDate}</td><td style="font-size:12px;color:var(--text-muted)">${p.reason||''}</td><td><button class="status-pill overdue" onclick="fr_openDetail('${p.num}')">미반납 ${overdueDays(p)}일</button></td></tr>`).join('')}
+      <table class="tbl section"><thead><tr><th>학생</th><th>패드</th><th>대여 시작</th><th>반납 예정</th><th>사용시간</th><th>사유</th><th>상태</th></tr></thead><tbody>
+        ${overdue.map(p=>`<tr><td><span class="clickable" onclick="gotoSearch('${p.studentId}')">${p.studentId}</span>${classBadge(DATA.students[p.studentId])}</td><td>${padDisplay(p)}</td><td style="font-size:12px">${fr_fmtStart(p)}</td><td style="color:var(--danger);font-weight:700;font-size:12px">${fr_fmtDue(p)}</td><td style="font-size:12px">${fr_fmtDuration(p)}</td><td style="font-size:12px;color:var(--text-muted)">${p.reason||''}</td><td><button class="status-pill overdue" onclick="fr_openDetail('${p.num}')">미반납 ${overdueLabel(p)}</button></td></tr>`).join('')}
       </tbody></table>`:''}
 
     <div class="section-label">대여중 (${normal.length}건)</div>
-    <table class="tbl section"><thead><tr><th>학생</th><th>패드</th><th>대여일</th><th>반납예정</th><th>사유</th><th>담당</th><th>상태</th></tr></thead><tbody>
-      ${normal.length?normal.map(p=>`<tr><td><span class="clickable" onclick="openStudentModal('${p.studentId}')">${p.studentId}</span></td><td>${padDisplay(p)}</td><td>${p.startDate}</td><td>${p.endDate}</td><td style="font-size:12px;color:var(--text-muted)">${p.reason||''}</td><td style="font-size:12px;color:var(--text-muted)">${p.assignedBy||'—'}</td><td><button class="status-pill rent" onclick="fr_openDetail('${p.num}')">대여중</button></td></tr>`).join(''):'<tr><td colspan="7" class="tbl-empty">대여중 없음</td></tr>'}
+    <table class="tbl section"><thead><tr><th>학생</th><th>패드</th><th>대여 시작</th><th>반납 예정</th><th>사용시간</th><th>사유</th><th>담당</th><th>상태</th></tr></thead><tbody>
+      ${normal.length?normal.map(p=>`<tr><td><span class="clickable" onclick="gotoSearch('${p.studentId}')">${p.studentId}</span>${classBadge(DATA.students[p.studentId])}</td><td>${padDisplay(p)}</td><td style="font-size:12px">${fr_fmtStart(p)}</td><td style="font-size:12px">${fr_fmtDue(p)}</td><td style="font-size:12px">${fr_fmtDuration(p)}</td><td style="font-size:12px;color:var(--text-muted)">${p.reason||''}</td><td style="font-size:12px;color:var(--text-muted)">${p.assignedBy||'—'}</td><td><button class="status-pill rent" onclick="fr_openDetail('${p.num}')">${p.duration?fr_remainLabel(p):'대여중'}</button></td></tr>`).join(''):'<tr><td colspan="8" class="tbl-empty">대여중 없음</td></tr>'}
     </tbody></table>
 
     <div class="section-label">대여 이력</div>
@@ -2313,6 +2628,7 @@ function renderFreeRent(){
 function fr_openNew(){
   const storage=Object.values(DATA.pads).filter(p=>p.type==='무료'&&p.status==='보관');
   if(!storage.length){toast('보관 중 패드 없음','error');return}
+  const durationOpts = (DATA._freeLendDurations || [15,30,45,60,120,180]);
   openModal(`
     <div class="modal-title">+ 대여 등록</div>
     <div class="modal-desc">학생 이름 또는 패드번호 하나만 입력해도 다른 쪽이 자동 매칭됩니다.</div>
@@ -2327,6 +2643,14 @@ function fr_openNew(){
       <div class="form-row"><label>대여일</label><input id="fr_start" type="date" value="${todayStr()}"></div>
       <div class="form-row"><label>반납 예정일<span class="req">*</span></label><input id="fr_end" type="date" value="${todayStr()}"></div>
     </div>
+    <div class="form-row">
+      <label>사용 시간 (학생 예정)</label>
+      <select id="fr_duration">
+        <option value="">선택 안함</option>
+        ${durationOpts.map(m=>`<option value="${m}">${m<60?m+'분':(m/60)+'시간'+(m%60?' '+(m%60)+'분':'')}</option>`).join('')}
+      </select>
+      <div class="form-hint">설정 → 무료대여 시간옵션에서 추가/변경 가능</div>
+    </div>
     <div class="form-row"><label>사유</label><input id="fr_reason" placeholder="예: 집에 두고 옴"></div>
     <div class="modal-actions"><button class="btn" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="fr_saveNew()">대여 등록</button></div>`);
 }
@@ -2339,20 +2663,68 @@ function fr_autoMatch(){
     nh.className='form-hint '+(st?'ok':'');
   }
 }
+/* 무료대여 시간 표시 헬퍼 */
+function fr_fmtStart(p){
+  if(p.startAt){
+    const d = new Date(p.startAt);
+    const mm = String(d.getMonth()+1).padStart(2,'0');
+    const dd = String(d.getDate()).padStart(2,'0');
+    const hh = String(d.getHours()).padStart(2,'0');
+    const mi = String(d.getMinutes()).padStart(2,'0');
+    return `${mm}-${dd} ${hh}:${mi}`;
+  }
+  return p.startDate || '—';
+}
+function fr_fmtDue(p){
+  if(p.startAt && p.duration){
+    const d = new Date(new Date(p.startAt).getTime() + p.duration*60*1000);
+    const mm = String(d.getMonth()+1).padStart(2,'0');
+    const dd = String(d.getDate()).padStart(2,'0');
+    const hh = String(d.getHours()).padStart(2,'0');
+    const mi = String(d.getMinutes()).padStart(2,'0');
+    return `${mm}-${dd} ${hh}:${mi}`;
+  }
+  return p.endDate || '—';
+}
+function fr_fmtDuration(p){
+  if(!p.duration) return '—';
+  const m = p.duration;
+  if(m<60) return m+'분';
+  const h = Math.floor(m/60);
+  const r = m%60;
+  return h+'시간'+(r?' '+r+'분':'');
+}
+function fr_remainLabel(p){
+  if(!p.duration || !p.startAt) return '대여중';
+  const due = new Date(p.startAt).getTime() + p.duration*60*1000;
+  const diffMs = due - Date.now();
+  if(diffMs <= 0) return '미반납';
+  const mins = Math.ceil(diffMs/60000);
+  if(mins<60) return '남은 '+mins+'분';
+  const hrs = Math.floor(mins/60);
+  return '남은 '+hrs+'시간'+(mins%60?' '+(mins%60)+'분':'');
+}
 function fr_saveNew(){
   const name=document.getElementById('fr_name').value.trim();
   const num=document.getElementById('fr_pad').value;
   const start=document.getElementById('fr_start').value;
   const end=document.getElementById('fr_end').value;
   const reason=document.getElementById('fr_reason').value.trim();
+  const duration=document.getElementById('fr_duration')?.value||'';
   if(!name){toast('학생 이름 필수','error');return}
   if(!num){toast('패드 선택','error');return}
   if(!end){toast('반납 예정일 필수','error');return}
   const p=DATA.pads[num];
+  const nowIso = new Date().toISOString();
   p.status='대여중';p.studentId=name;p.startDate=start||todayStr();p.endDate=end;p.reason=reason;p.assignedBy=currentUser;
+  p.startAt=nowIso;
+  if(duration) p.duration=parseInt(duration);
   if(!DATA.students[name]) DATA.students[name]={id:name,name,status:'재원',pads:[]};
-  DATA.students[name].pads.push({type:'무료',num,model:p.model,startDate:p.startDate,endDate:end,reason});
-  addHistory('무료대여','대여',name+' · '+num,name,num);
+  const padEntry={type:'무료',num,model:p.model,startDate:p.startDate,endDate:end,reason,startAt:nowIso};
+  if(duration) padEntry.duration=parseInt(duration);
+  DATA.students[name].pads.push(padEntry);
+  const dLabel = duration ? ` (사용 ${duration<60?duration+'분':(duration/60)+'시간'+(duration%60?' '+(duration%60)+'분':'')})` : '';
+  addHistory('무료대여','대여',name+' · '+num+dLabel,name,num);
   closeModal();toast('대여 등록 완료','success');refreshCurrentPage();
 }
 function fr_openDetail(num){
@@ -2361,7 +2733,7 @@ function fr_openDetail(num){
   const over=isOverdueFree(p);
   openModal(`
     <div class="modal-title">무료 대여 — ${p.studentId} · ${num}</div>
-    <div class="modal-desc">${p.startDate} ~ ${p.endDate}${over?' <span class="badge badge-red">연체 '+overdueDays(p)+'일</span>':''}<br>사유: ${p.reason||'(없음)'} · 담당: ${p.assignedBy||'—'}</div>
+    <div class="modal-desc">${p.startDate} ~ ${p.endDate}${over?' <span class="badge badge-red">연체 '+overdueLabel(p)+'</span>':''}<br>사유: ${p.reason||'(없음)'} · 담당: ${p.assignedBy||'—'}</div>
     <div class="box" style="background:var(--neutral);padding:14px">
       <div style="font-size:13px;font-weight:700;margin-bottom:8px">작업 선택</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
@@ -2397,10 +2769,19 @@ function fr_doReturn(num){
 }
 function fr_openExtend(num){
   const p=DATA.pads[num];
+  const durationOpts = (DATA._freeLendDurations || [15,30,45,60,120,180]);
+  const curDurLabel = p.duration ? (p.duration<60?p.duration+'분':(p.duration/60)+'시간'+(p.duration%60?' '+(p.duration%60)+'분':'')) : '(없음)';
   openModal(`
     <div class="modal-title">연장 — ${p.studentId} · ${num}</div>
-    <div class="modal-desc">현재 반납예정일: <b>${p.endDate}</b>${isOverdueFree(p)?' <span class="badge badge-red">연체중</span>':''}</div>
-    <div class="form-row"><label>새 반납 예정일<span class="req">*</span></label><input id="fr_extEnd" type="date" value="${p.endDate}"></div>
+    <div class="modal-desc">현재 반납예정일: <b>${p.endDate}</b>${isOverdueFree(p)?' <span class="badge badge-red">연체중</span>':''}${p.duration?`<br>현재 사용시간: <b>${curDurLabel}</b>`:''}</div>
+    <div class="form-row"><label>새 반납 예정일<span class="req">*</span></label><input id="fr_extEnd" type="date" value="${todayStr()}"></div>
+    <div class="form-row">
+      <label>새 사용 시간<span class="req">*</span></label>
+      <select id="fr_extDuration">
+        ${durationOpts.map((m,i)=>`<option value="${m}" ${i===0?'selected':''}>${m<60?m+'분':(m/60)+'시간'+(m%60?' '+(m%60)+'분':'')}</option>`).join('')}
+      </select>
+      <div class="form-hint">지금부터 새로 카운트 시작됩니다</div>
+    </div>
     <div class="form-row"><label>연장 사유<span class="req">*</span></label><input id="fr_extReason" placeholder="예: 본인 패드 수리 지연"></div>
     <div class="form-row"><label>메모</label><input id="fr_extMemo"></div>
     <div class="modal-actions"><button class="btn" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="fr_doExtend('${num}')">연장 확정</button></div>`);
@@ -2409,15 +2790,31 @@ function fr_doExtend(num){
   const newEnd=document.getElementById('fr_extEnd').value;
   const reason=document.getElementById('fr_extReason').value.trim();
   const memo=document.getElementById('fr_extMemo').value.trim();
+  const newDurVal=document.getElementById('fr_extDuration')?.value;
   if(!newEnd){toast('새 반납일 필수','error');return}
   if(!reason){toast('사유 필수','error');return}
+  if(!newDurVal){toast('사용 시간 선택 필수','error');return}
   const p=DATA.pads[num];
   if(!p.extensions) p.extensions=[];
-  p.extensions.push({date:todayStr(),prevEndDate:p.endDate,newEndDate:newEnd,reason,memo,by:currentUser});
+  const extRecord={date:todayStr(),prevEndDate:p.endDate,newEndDate:newEnd,reason,memo,by:currentUser};
+  // 새 사용 시간으로 재설정 (연장 시점부터 시작)
+  const m = parseInt(newDurVal);
+  p.duration = m;
+  p.startAt = new Date().toISOString();
+  extRecord.durationChange = m+'분 재설정';
+  const durMsg = ` · 사용시간 ${m<60?m+'분':(m/60)+'시간'+(m%60?' '+(m%60)+'분':'')} 재설정`;
+  p.extensions.push(extRecord);
   p.endDate=newEnd;
   const st=DATA.students[p.studentId];
-  if(st){const pp=st.pads.find(x=>x.type==='무료'&&x.num===num);if(pp) pp.endDate=newEnd}
-  addHistory('무료대여','연장',p.studentId+' · '+num+' → '+newEnd+' ('+reason+')',p.studentId,num);
+  if(st){
+    const pp=st.pads.find(x=>x.type==='무료'&&x.num===num);
+    if(pp){
+      pp.endDate=newEnd;
+      pp.duration=m;
+      pp.startAt=p.startAt;
+    }
+  }
+  addHistory('무료대여','연장',p.studentId+' · '+num+' → '+newEnd+' ('+reason+')'+durMsg,p.studentId,num);
   closeModal();toast('연장 완료 — 대여중으로 복귀','success');refreshCurrentPage();
 }
 function fr_openCancel(num){
@@ -2439,22 +2836,35 @@ function renderFreeHistory(){
   let all=active.concat(DATA.freeHistory);
   if(F.q){const q=F.q.toLowerCase();all=all.filter(h=>h.studentId?.toLowerCase().includes(q)||h.padNum.toLowerCase().includes(q)||h.assignedBy?.toLowerCase().includes(q)||h.returnedBy?.toLowerCase().includes(q))}
   if(F.status) all=all.filter(h=>h.status===F.status);
+  if(F.cls){all=all.filter(h=>{const st=DATA.students[h.studentId];return st && (st.class||'정규')===F.cls})}
   if(F.from||F.to) all=all.filter(h=>rangeOverlap(h.startDate,h.returnDate||h.endDate,F.from,F.to));
+
+  // 전체 보기 시 (상태 필터 없음 + 검색어 없음 + 기간 없음): 미반납/대여중 전부 + 반납은 오늘만
+  const isDefaultView = !F.status && !F.q && !F.from && !F.to && !F.cls;
+  if(isDefaultView){
+    const today = todayStr();
+    all = all.filter(h => h.status!=='반납' || h.returnDate===today);
+  }
+
   const order={'미반납':0,'대여중':1,'반납':2};
   all.sort((a,b)=>{const d=order[a.status]-order[b.status];if(d!==0) return d;return (b.returnDate||b.startDate||'').localeCompare(a.returnDate||a.startDate||'')});
   const show=all.slice(0,F.limit);
+  const classes = getAllClasses();
   return `
-    <div class="filter-bar">
+    ${isDefaultView?'<div style="background:#fef3c7;border:1px solid #fbbf24;padding:8px 12px;border-radius:6px;margin-bottom:12px;font-size:12px;color:#92400e">기본 화면: <b>미반납·대여중 전체 + 오늘 반납분</b>만 표시. 과거 반납 이력은 [상태=반납] 또는 기간 필터로 조회</div>':''}
+    <div class="filter-bar" style="grid-template-columns:1.5fr 0.8fr 0.8fr 0.8fr 0.8fr auto auto">
       <div class="filter-field"><label>검색 (학생/패드/담당자)</label><input value="${F.q||''}" oninput="STATE.free.q=this.value;showPage('freeRent')"></div>
+      <div class="filter-field"><label>반</label><select onchange="STATE.free.cls=this.value;showPage('freeRent')"><option value="" ${!F.cls?'selected':''}>전체</option>${classes.map(c=>`<option value="${c}" ${F.cls===c?'selected':''}>${c}</option>`).join('')}</select></div>
       <div class="filter-field"><label>상태</label><select onchange="STATE.free.status=this.value;showPage('freeRent')"><option value="" ${!F.status?'selected':''}>전체</option><option value="미반납" ${F.status==='미반납'?'selected':''}>미반납</option><option value="대여중" ${F.status==='대여중'?'selected':''}>대여중</option><option value="반납" ${F.status==='반납'?'selected':''}>반납</option></select></div>
       <div class="filter-field"><label>from</label><input type="date" value="${F.from||''}" onchange="STATE.free.from=this.value;showPage('freeRent')"></div>
       <div class="filter-field"><label>to</label><input type="date" value="${F.to||''}" onchange="STATE.free.to=this.value;showPage('freeRent')"></div>
-      <div class="filter-field"><label>&nbsp;</label><button class="btn btn-excel" onclick="dlFreeHist()">엑셀</button></div>
+      <div class="filter-field"><label>&nbsp;</label><button class="btn btn-excel btn-sm" onclick="dlFreeHist()">엑셀</button></div>
+      <div class="filter-field"><label>&nbsp;</label><button class="btn btn-sm" onclick="STATE.free.q='';STATE.free.cls='';STATE.free.status='';STATE.free.from='';STATE.free.to='';showPage('freeRent')">초기화</button></div>
     </div>
     <table class="tbl"><thead><tr><th>상태</th><th>학생</th><th>패드</th><th>대여~반납</th><th>사유</th><th>담당(대여→반납)</th><th>메모</th></tr></thead><tbody>
       ${show.length?show.map(h=>`<tr>
         <td>${h.status==='미반납'?'<button class="status-pill overdue" onclick="fr_openDetail(\''+h.padNum+'\')">미반납</button>':h.status==='대여중'?'<button class="status-pill rent" onclick="fr_openDetail(\''+h.padNum+'\')">대여중</button>':'<span class="status-pill returned">반납</span>'}</td>
-        <td><span class="clickable" onclick="openStudentModal('${h.studentId}')">${h.studentId}</span></td>
+        <td><span class="clickable" onclick="gotoSearch('${h.studentId}')">${h.studentId}</span>${classBadge(DATA.students[h.studentId])}</td>
         <td><b>${h.padNum}</b></td>
         <td>${h.startDate}<br>~ ${h.returnDate||h.endDate||'—'}</td>
         <td style="font-size:12px;color:var(--text-muted)">${h.reason||'—'}</td>
@@ -2535,6 +2945,7 @@ function renderInvList(){
   if(I.q){const q=I.q.toLowerCase();filtered=filtered.filter(p=>p.num.toLowerCase().includes(q)||p.studentId?.toLowerCase().includes(q)||p.fenceNum?.toLowerCase().includes(q))}
   if(I.status) filtered=filtered.filter(p=>p.status===I.status);
   if(I.by){const q=I.by.toLowerCase();filtered=filtered.filter(p=>p.assignedBy?.toLowerCase().includes(q))}
+  if(I.cls){filtered=filtered.filter(p=>{if(!p.studentId) return false;const st=DATA.students[p.studentId];return st && (st.class||'정규')===I.cls})}
   if(I.from||I.to) filtered=filtered.filter(p=>dateInRange(p.assignedDate,I.from,I.to));
   const show=filtered.slice(0,I.limit);
 
@@ -2607,12 +3018,13 @@ function renderInvList(){
   return `
     ${dashSection}
 
-    <div class="filter-bar">
+    <div class="filter-bar" style="grid-template-columns:1.3fr 0.8fr 0.8fr 0.8fr 0.8fr auto">
       <div class="filter-field"><label>검색 (번호/학생/펜스)</label><input value="${I.q||''}" oninput="STATE.inventory.q=this.value;showPage('inventory')"></div>
+      <div class="filter-field"><label>반</label><select onchange="STATE.inventory.cls=this.value;showPage('inventory')"><option value="" ${!I.cls?'selected':''}>전체</option>${getAllClasses().map(c=>`<option value="${c}" ${I.cls===c?'selected':''}>${c}</option>`).join('')}</select></div>
       <div class="filter-field"><label>상태</label><select onchange="STATE.inventory.status=this.value;showPage('inventory')"><option value="" ${!I.status?'selected':''}>전체</option>${allStatuses.map(s=>`<option value="${s}" ${I.status===s?'selected':''}>${statusLabel(s)}</option>`).join('')}</select></div>
       <div class="filter-field"><label>담당자</label><input value="${I.by||''}" oninput="STATE.inventory.by=this.value;showPage('inventory')"></div>
       <div class="filter-field"><label>배부일 from</label><input type="date" value="${I.from||''}" onchange="STATE.inventory.from=this.value;showPage('inventory')"></div>
-      <div class="filter-field"><label>&nbsp;</label><button class="btn" onclick="STATE.inventory.q='';STATE.inventory.status='';STATE.inventory.by='';STATE.inventory.from='';STATE.inventory.to='';showPage('inventory')">초기화</button></div>
+      <div class="filter-field"><label>&nbsp;</label><button class="btn btn-sm" onclick="STATE.inventory.q='';STATE.inventory.cls='';STATE.inventory.status='';STATE.inventory.by='';STATE.inventory.from='';STATE.inventory.to='';showPage('inventory')">초기화</button></div>
     </div>
     <table class="tbl"><thead><tr><th>번호</th><th>기종</th><th>종류</th><th>상태</th><th>학생</th><th>펜스</th><th>배부일</th><th>담당</th><th>작업</th></tr></thead><tbody>
       ${show.length?show.map(p=>{
@@ -2717,42 +3129,61 @@ function renderInvBroken(){
   const current=Object.values(DATA.pads).filter(p=>p.broken);
   let all=current.map(p=>({src:'current',padNum:p.num,model:p.model,type:p.broken.type,memo:p.broken.memo,receiveDate:p.broken.receiveDate,receiveBy:p.broken.receiveBy,sendDate:p.broken.sendDate,sendBy:p.broken.sendBy,completeDate:null,completeBy:null,finalStatus:null,finalType:null,stage:p.broken.stage,prevStudent:p.broken.prevStudent}))
     .concat(DATA.brokenHistory.map(h=>({src:'history',padNum:h.padNum,model:'',type:h.type,memo:h.memo,receiveDate:h.receiveDate,receiveBy:h.receiveBy,sendDate:h.sendDate,sendBy:h.sendBy,completeDate:h.completeDate,completeBy:h.completeBy,finalStatus:h.finalStatus,finalType:h.finalType,stage:h.finalStatus==='폐기'?'폐기':'완료',prevStudent:h.prevStudent,_recent:h._recent})));
+  // 공통 검색
   if(I.brokenQ){const q=I.brokenQ.toLowerCase();all=all.filter(h=>h.padNum.toLowerCase().includes(q)||h.prevStudent?.toLowerCase().includes(q)||h.receiveBy?.toLowerCase().includes(q))}
-  if(I.brokenStage) all=all.filter(h=>h.stage===I.brokenStage);
+  // 탭별 필터
   if(I.brokenView==='history') all=all.filter(h=>h.stage==='완료'||h.stage==='폐기');
-  else if(I.brokenView==='active') all=all.filter(h=>h.stage==='AS대기'||h.stage==='AS진행중');
+  else if(I.brokenView==='active'||!I.brokenView) all=all.filter(h=>h.stage==='AS대기'||h.stage==='AS진행중');
+  // 단계 드롭다운 (탭별로 유효 값만 적용)
+  if(I.brokenStage) all=all.filter(h=>h.stage===I.brokenStage);
+  // 기간 필터 (사용자가 직접 설정한 경우만)
   if(I.brokenFrom||I.brokenTo){all=all.filter(h=>{if(dateInRange(h.receiveDate,I.brokenFrom,I.brokenTo)) return true;if(dateInRange(h.sendDate,I.brokenFrom,I.brokenTo)) return true;if(dateInRange(h.completeDate,I.brokenFrom,I.brokenTo)) return true;return false})}
   const order={'AS대기':0,'AS진행중':1,'완료':2,'폐기':3};
   all.sort((a,b)=>{const oa=order[a.stage]||9,ob=order[b.stage]||9;if(oa!==ob)return oa-ob;return (b._recent?1:0)-(a._recent?1:0)});
   const activeCnt=Object.values(DATA.pads).filter(p=>p.broken).length;
   const histCnt=DATA.brokenHistory.length;
-  // 단계별 집계
   const waitCnt=current.filter(p=>p.broken.stage==='AS대기').length;
   const inProgCnt=current.filter(p=>p.broken.stage==='AS진행중').length;
   const compCnt=DATA.brokenHistory.filter(h=>h.finalStatus!=='폐기').length;
   const discardCnt=DATA.brokenHistory.filter(h=>h.finalStatus==='폐기').length;
+  const curView = I.brokenView || 'active';
+  // 탭별 단계 옵션
+  let stageOpts = [];
+  if(curView==='active') stageOpts = ['AS대기','AS진행중'];
+  else if(curView==='history') stageOpts = ['완료','폐기'];
+  else stageOpts = ['AS대기','AS진행중','완료','폐기'];
   return `
     <div class="dash-grid section" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));margin-bottom:14px">
-      <div class="dash-card ${waitCnt>0?'warn':''}"><div class="dash-label">AS 대기</div><div class="dash-main"><span class="dash-num">${waitCnt}</span><span class="dash-unit">대</span></div><div class="dash-sub">접수됨, 발송 전</div></div>
-      <div class="dash-card ${inProgCnt>0?'warn':''}"><div class="dash-label">AS 진행중</div><div class="dash-main"><span class="dash-num">${inProgCnt}</span><span class="dash-unit">대</span></div><div class="dash-sub">수리 대기</div></div>
-      <div class="dash-card ok"><div class="dash-label">수리 완료</div><div class="dash-main"><span class="dash-num">${compCnt}</span><span class="dash-unit">대</span></div><div class="dash-sub">월납/무료 복귀</div></div>
-      <div class="dash-card"><div class="dash-label">폐기 누적</div><div class="dash-main"><span class="dash-num">${discardCnt}</span><span class="dash-unit">대</span></div><div class="dash-sub">수리 불가</div></div>
+      <div class="dash-card ${waitCnt>0?'warn':''}" style="cursor:pointer" onclick="br_gotoActive('AS대기')"><div class="dash-label">AS 대기</div><div class="dash-main"><span class="dash-num">${waitCnt}</span><span class="dash-unit">대</span></div><div class="dash-sub">접수됨, 발송 전</div></div>
+      <div class="dash-card ${inProgCnt>0?'warn':''}" style="cursor:pointer" onclick="br_gotoActive('AS진행중')"><div class="dash-label">AS 진행중</div><div class="dash-main"><span class="dash-num">${inProgCnt}</span><span class="dash-unit">대</span></div><div class="dash-sub">수리 대기</div></div>
+      <div class="dash-card ok" style="cursor:pointer" onclick="br_gotoHistory('완료')"><div class="dash-label">수리 완료 (누적)</div><div class="dash-main"><span class="dash-num">${compCnt}</span><span class="dash-unit">대</span></div><div class="dash-sub">월납/무료 복귀</div></div>
+      <div class="dash-card" style="cursor:pointer" onclick="br_gotoHistory('폐기')"><div class="dash-label">폐기 누적</div><div class="dash-main"><span class="dash-num">${discardCnt}</span><span class="dash-unit">대</span></div><div class="dash-sub">수리 불가</div></div>
     </div>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:10px;flex-wrap:wrap">
       <div class="tabs" style="margin:0">
-        <div class="tab ${!I.brokenView||I.brokenView==='all'?'active':''}" onclick="STATE.inventory.brokenView='all';showPage('inventory')">전체 (${activeCnt+histCnt})</div>
-        <div class="tab ${I.brokenView==='active'?'active':''}" onclick="STATE.inventory.brokenView='active';showPage('inventory')">진행 중 (${activeCnt})</div>
-        <div class="tab ${I.brokenView==='history'?'active':''}" onclick="STATE.inventory.brokenView='history';showPage('inventory')">완료/폐기 (${histCnt})</div>
+        <div class="tab ${curView==='active'?'active':''}" onclick="STATE.inventory.brokenView='active';STATE.inventory.brokenStage='';STATE.inventory.brokenFrom='';STATE.inventory.brokenTo='';showPage('inventory')">진행 중 (${activeCnt})</div>
+        <div class="tab ${curView==='history'?'active':''}" onclick="STATE.inventory.brokenView='history';STATE.inventory.brokenStage='';STATE.inventory.brokenFrom='';STATE.inventory.brokenTo='';showPage('inventory')">완료/폐기 이력 (${histCnt})</div>
+        <div class="tab ${curView==='all'?'active':''}" onclick="STATE.inventory.brokenView='all';STATE.inventory.brokenStage='';STATE.inventory.brokenFrom='';STATE.inventory.brokenTo='';showPage('inventory')">전체 (${activeCnt+histCnt})</div>
       </div>
       <button class="btn btn-primary" onclick="br_openNew()">+ 파손·고장 접수</button>
     </div>
-    <div class="filter-bar">
+    ${curView==='history'?`
+    <div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;align-items:center">
+      <span style="font-size:12px;color:var(--text-muted);margin-right:6px">기간 프리셋:</span>
+      <button class="btn btn-sm" onclick="br_setRange(7)">최근 7일</button>
+      <button class="btn btn-sm" onclick="br_setRange(30)">최근 1개월</button>
+      <button class="btn btn-sm" onclick="br_setRange(90)">최근 3개월</button>
+      <button class="btn btn-sm" onclick="br_setRange(365)">최근 1년</button>
+      <button class="btn btn-sm" onclick="br_setRange(0)">전체</button>
+    </div>`:''}
+    <div class="filter-bar" style="grid-template-columns:${curView!=='active'?'1.5fr 0.8fr 0.8fr 0.8fr auto':'1.5fr 0.8fr auto'}">
       <div class="filter-field"><label>검색 (패드/학생/담당자)</label><input value="${I.brokenQ||''}" oninput="STATE.inventory.brokenQ=this.value;showPage('inventory')"></div>
-      <div class="filter-field"><label>단계</label><select onchange="STATE.inventory.brokenStage=this.value;showPage('inventory')"><option value="" ${!I.brokenStage?'selected':''}>전체</option>${['AS대기','AS진행중','완료','폐기'].map(s=>`<option value="${s}" ${I.brokenStage===s?'selected':''}>${s}</option>`).join('')}</select></div>
-      <div class="filter-field"><label>기간 from</label><input type="date" value="${I.brokenFrom||''}" onchange="STATE.inventory.brokenFrom=this.value;showPage('inventory')"></div>
-      <div class="filter-field"><label>to</label><input type="date" value="${I.brokenTo||''}" onchange="STATE.inventory.brokenTo=this.value;showPage('inventory')"></div>
-      <div class="filter-field"><label>&nbsp;</label><button class="btn" onclick="STATE.inventory.brokenQ='';STATE.inventory.brokenStage='';STATE.inventory.brokenFrom='';STATE.inventory.brokenTo='';showPage('inventory')">초기화</button></div>
+      <div class="filter-field"><label>단계</label><select onchange="STATE.inventory.brokenStage=this.value;showPage('inventory')"><option value="" ${!I.brokenStage?'selected':''}>전체</option>${stageOpts.map(s=>`<option value="${s}" ${I.brokenStage===s?'selected':''}>${s}</option>`).join('')}</select></div>
+      ${curView!=='active'?`<div class="filter-field"><label>기간 from</label><input type="date" value="${I.brokenFrom||''}" onchange="STATE.inventory.brokenFrom=this.value;showPage('inventory')"></div>
+      <div class="filter-field"><label>to</label><input type="date" value="${I.brokenTo||''}" onchange="STATE.inventory.brokenTo=this.value;showPage('inventory')"></div>`:''}
+      <div class="filter-field"><label>&nbsp;</label><button class="btn btn-sm" onclick="STATE.inventory.brokenQ='';STATE.inventory.brokenStage='';STATE.inventory.brokenFrom='';STATE.inventory.brokenTo='';showPage('inventory')">초기화</button></div>
     </div>
+    <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">${curView==='history'?`완료·폐기 이력 ${all.length}건`:curView==='active'?`진행 중 ${all.length}건`:`전체 ${all.length}건`}${I.brokenFrom?` · ${I.brokenFrom} ~ ${I.brokenTo||'오늘'}`:''}</div>
     <table class="tbl"><thead><tr><th>패드</th><th>이전학생</th><th>단계</th><th>사유</th><th>접수(담당)</th><th>발송(담당)</th><th>수령/폐기(담당)</th><th>최종</th><th>작업</th></tr></thead><tbody>
       ${all.length?all.map(h=>`<tr${h._recent?' style="background:#fef3c7;animation:flash 1s 2"':''}>
         <td><b>${h.padNum}</b>${h.model?` <span class="pad-model-small">${h.model}</span>`:''}${h._recent?' <span class="badge badge-yellow" style="font-size:10px">방금 처리됨</span>':''}</td>
@@ -2764,8 +3195,31 @@ function renderInvBroken(){
         <td style="font-size:12px">${h.completeDate||'—'}<br><span style="color:var(--text-muted)">${h.completeBy||'—'}</span></td>
         <td style="font-size:12px">${h.finalStatus?h.finalType+' · '+h.finalStatus:'—'}</td>
         <td>${h.stage==='AS대기'?`<button class="btn btn-sm btn-primary" onclick="br_send('${h.padNum}')">발송</button>`:''}${h.stage==='AS진행중'?`<button class="btn btn-sm btn-success" onclick="br_complete('${h.padNum}')">수령/폐기</button>`:''}</td>
-      </tr>`).join(''):'<tr><td colspan="9" class="tbl-empty">없음</td></tr>'}
+      </tr>`).join(''):'<tr><td colspan="9" class="tbl-empty">해당 없음</td></tr>'}
     </tbody></table>`;
+}
+function br_gotoActive(stage){
+  STATE.inventory.tab='broken';
+  STATE.inventory.brokenView='active';
+  STATE.inventory.brokenStage=stage||'';
+  STATE.inventory.brokenFrom='';STATE.inventory.brokenTo='';STATE.inventory.brokenQ='';
+  showPage('inventory');
+}
+function br_gotoHistory(stage){
+  STATE.inventory.tab='broken';
+  STATE.inventory.brokenView='history';
+  STATE.inventory.brokenStage=stage||'';
+  STATE.inventory.brokenFrom='';STATE.inventory.brokenTo='';STATE.inventory.brokenQ='';
+  showPage('inventory');
+}
+function br_setRange(days){
+  if(days===0){STATE.inventory.brokenFrom='';STATE.inventory.brokenTo='';}
+  else {
+    const d=new Date();d.setDate(d.getDate()-days);
+    STATE.inventory.brokenFrom=d.toISOString().slice(0,10);
+    STATE.inventory.brokenTo='';
+  }
+  showPage('inventory');
 }
 function br_openNew(){
   const monthlyStock=Object.values(DATA.pads).filter(p=>p.type==='월납'&&p.status==='창고'&&!p.studentId);
@@ -3558,31 +4012,79 @@ function renderRefund(){
   }
   let ann=list.map(st=>({st,rs:refundStatusOf(st)})).filter(x=>x.rs!==null);
   if(R.q){const q=R.q.toLowerCase();ann=ann.filter(x=>x.st.name.toLowerCase().includes(q))}
+  if(R.cls){ann=ann.filter(x=>(x.st.class||'정규')===R.cls)}
   if(R.status) ann=ann.filter(x=>x.rs===R.status);
   if(R.from||R.to) ann=ann.filter(x=>dateInRange(x.st.tuebanDate,R.from,R.to));
+  // 환불완료는 전체 보기 시: 학생 검색/기간 필터 없으면 기본 오늘 처리분만
+  if(R.status==='' || !R.status){
+    if(!R.q && !R.from && !R.to && !R.cls){
+      const today = todayStr();
+      ann=ann.filter(x=>x.rs!=='환불완료' || (x.st.refundCompletedDate && x.st.refundCompletedDate===today));
+    }
+  }
   const order={'환불대기':0,'미반납':1,'환불완료':2};
-  ann.sort((a,b)=>{const d=order[a.rs]-order[b.rs];if(d!==0)return d;return(a.st.tuebanDate||'').localeCompare(b.st.tuebanDate||'')});
+  // 정렬: completeOld(회수 오래된순) / completeNew / nameAsc / recentDone(최근 처리순)
+  // 환불완료 필터일 때 기본은 recentDone, 그 외엔 completeOld
+  let sortType = R.sort;
+  if(!sortType){
+    sortType = R.status==='환불완료' ? 'recentDone' : 'completeOld';
+  }
+  ann.sort((a,b)=>{
+    const d=order[a.rs]-order[b.rs];
+    if(d!==0) return d;
+    if(sortType==='nameAsc') return (a.st.name||'').localeCompare(b.st.name||'','ko');
+    if(sortType==='recentDone'){
+      // 환불완료 처리일 최신순 (환불완료 학생만 의미 있음)
+      const ra=a.st.refundCompletedDate||'';
+      const rb=b.st.refundCompletedDate||'';
+      if(ra||rb) return rb.localeCompare(ra);
+      // fallback: 회수 완료일
+      const ca=a.st.completeDate||a.st.tuebanDate||'';
+      const cb=b.st.completeDate||b.st.tuebanDate||'';
+      return cb.localeCompare(ca);
+    }
+    if(sortType==='completeNew'){
+      const ca=a.st.completeDate||a.st.tuebanDate||'';
+      const cb=b.st.completeDate||b.st.tuebanDate||'';
+      return cb.localeCompare(ca);
+    }
+    // completeOld (기본): 회수 완료일 오래된 순 (오래 기다린 사람부터)
+    const ca=a.st.completeDate||a.st.tuebanDate||'';
+    const cb=b.st.completeDate||b.st.tuebanDate||'';
+    return ca.localeCompare(cb);
+  });
   const show=ann.slice(0,R.limit);
   const counts={'환불대기':0,'미반납':0,'환불완료':0};
   ann.forEach(x=>counts[x.rs]++);
+  const classes = getAllClasses();
+  // 방금 처리한 학생 (lastProcessed) 표시용
+  const lastSid = STATE.refund.lastProcessed;
+  const lastSt = lastSid ? DATA.students[lastSid] : null;
+  const isDefaultView = !R.status && !R.q && !R.from && !R.to && !R.cls;
   return `
     <div class="page-header">
-      <div><div class="page-title">환불 <span class="inline-stats">환불대기 ${counts['환불대기']} · 퇴원 미반납 ${counts['미반납']}</span></div>
-      <div class="page-subtitle" style="display:none"></div></div>
+      <div><div class="page-title">환불 <span class="inline-stats">환불대기 ${counts['환불대기']} · 퇴원 미반납 ${counts['미반납']}</span></div></div>
     </div>
+    ${lastSt?`<div style="background:#dcfce7;border:1px solid #86efac;padding:10px 14px;border-radius:8px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;font-size:13px">
+      <span>✓ 방금 처리: <b>${lastSt.name}</b>${classBadge(lastSt)} → <b>환불완료</b> ${lastSt.refundCompletedDate?'('+lastSt.refundCompletedDate+')':''}</span>
+      <button class="btn btn-sm" onclick="STATE.refund.lastProcessed=null;showPage('refund')">닫기</button>
+    </div>`:''}
+    ${isDefaultView?'<div style="background:#fef3c7;border:1px solid #fbbf24;padding:8px 12px;border-radius:6px;margin-bottom:12px;font-size:12px;color:#92400e">기본 화면: <b>환불대기·미반납 전체 + 오늘 환불완료분</b>만 표시. 과거 환불완료는 [상태=환불완료] 또는 기간 필터로 조회</div>':''}
     <div class="summary-row">
       <div class="summary-item warn"><b>${counts['환불대기']}</b>환불대기</div>
       <div class="summary-item danger"><b>${counts['미반납']}</b>퇴원 미반납</div>
       <div class="summary-item muted"><b>${counts['환불완료']}</b>환불완료</div>
     </div>
-    <div class="filter-bar">
+    <div class="filter-bar" style="grid-template-columns:1.2fr 0.8fr 0.9fr 1.2fr 0.8fr 0.8fr auto">
       <div class="filter-field"><label>학생 검색</label><input value="${R.q||''}" placeholder="학생명" oninput="STATE.refund.q=this.value;showPage('refund')"></div>
-      <div class="filter-field"><label>상태</label><select onchange="STATE.refund.status=this.value;showPage('refund')"><option value="" ${!R.status?'selected':''}>전체</option><option value="환불대기" ${R.status==='환불대기'?'selected':''}>환불대기</option><option value="미반납" ${R.status==='미반납'?'selected':''}>퇴원 미반납</option><option value="환불완료" ${R.status==='환불완료'?'selected':''}>환불완료</option></select></div>
-      <div class="filter-field"><label>퇴원일 from</label><input type="date" value="${R.from||''}" onchange="STATE.refund.from=this.value;showPage('refund')"></div>
-      <div class="filter-field"><label>퇴원일 to</label><input type="date" value="${R.to||''}" onchange="STATE.refund.to=this.value;showPage('refund')"></div>
-      <div class="filter-field"><label>&nbsp;</label><button class="btn btn-excel" onclick="dlRefund()">엑셀</button></div>
+      <div class="filter-field"><label>반</label><select onchange="STATE.refund.cls=this.value;showPage('refund')"><option value="" ${!R.cls?'selected':''}>전체</option>${classes.map(c=>`<option value="${c}" ${R.cls===c?'selected':''}>${c}</option>`).join('')}</select></div>
+      <div class="filter-field"><label>상태</label><select onchange="STATE.refund.status=this.value;STATE.refund.sort='';showPage('refund')"><option value="" ${!R.status?'selected':''}>전체</option><option value="환불대기" ${R.status==='환불대기'?'selected':''}>환불대기</option><option value="미반납" ${R.status==='미반납'?'selected':''}>퇴원 미반납</option><option value="환불완료" ${R.status==='환불완료'?'selected':''}>환불완료</option></select></div>
+      <div class="filter-field"><label>정렬</label><select onchange="STATE.refund.sort=this.value;showPage('refund')"><option value="completeOld" ${sortType==='completeOld'?'selected':''}>회수순</option><option value="nameAsc" ${sortType==='nameAsc'?'selected':''}>이름순</option><option value="recentDone" ${sortType==='recentDone'?'selected':''}>퇴반순</option></select></div>
+      <div class="filter-field"><label>from</label><input type="date" value="${R.from||''}" onchange="STATE.refund.from=this.value;showPage('refund')"></div>
+      <div class="filter-field"><label>to</label><input type="date" value="${R.to||''}" onchange="STATE.refund.to=this.value;showPage('refund')"></div>
+      <div class="filter-field"><label>&nbsp;</label><button class="btn btn-excel btn-sm" onclick="dlRefund()">엑셀</button></div>
     </div>
-    <table class="tbl"><thead><tr><th>상태</th><th>학생</th><th>퇴원일 (담당)</th><th>패드</th><th>회수 상세</th><th>작업</th></tr></thead><tbody>
+    <table class="tbl"><thead><tr><th>상태</th><th>학생</th><th>퇴원일 (담당)</th><th>패드</th><th>회수 상세</th><th>환불 처리 (담당)</th><th>작업</th></tr></thead><tbody>
       ${show.length?show.map(x=>{
         const st=x.st;const rs=x.rs;
         const p=st.pads.find(pp=>pp.type==='월납')||st.pads.find(pp=>pp.type==='신규');
@@ -3593,44 +4095,71 @@ function renderRefund(){
           const notLeased=comps.filter(c=>p.leased&&p.leased[c]===false);
           if(notLeased.length) recovDetail+=`<div style="font-size:10px;color:var(--text-light);margin-top:4px">미대여: ${notLeased.join(', ')}${p.leaseMemo?' ('+p.leaseMemo+')':''}</div>`;
         }
+        const refundInfo = st.refundCompletedDate
+          ? `${st.refundCompletedDate}<br><span style="font-size:11px;color:var(--text-muted)">${st.refundCompletedBy||'—'}</span>`
+          : '<span style="font-size:11px;color:var(--text-light)">—</span>';
         return `<tr>
-          <td><span class="badge badge-${rs==='환불대기'?'yellow':rs==='미반납'?'red':'gray'}">${rs==='미반납'?'퇴원 미반납':rs}</span></td>
-          <td><span class="clickable" onclick="openStudentModal('${st.id}')">${st.name}</span></td>
+          <td><span class="badge badge-${rs==='환불대기'?'yellow':rs==='미반납'?'red':'gray'}">${rs==='미반납'?'퇴원 미반납':rs==='환불완료'?'환불완료':rs}</span></td>
+          <td><span class="clickable" onclick="openStudentModal('${st.id}')">${st.name}</span>${classBadge(st)}</td>
           <td>${st.tuebanDate||'—'}<br><span style="font-size:11px;color:var(--text-muted)">${st.tuebanBy||'—'}</span></td>
           <td>${p?padDisplay(p):'—'}</td>
           <td>${recovDetail}</td>
+          <td>${refundInfo}</td>
           <td>
             ${rs==='환불대기'&&canClickRefund()?`<button class="btn btn-sm btn-primary" onclick="refund_process('${st.id}')">환불 요청</button>`:''}
             ${rs==='환불대기'&&!canClickRefund()?'<span style="font-size:11px;color:var(--text-muted)">스타터만 가능</span>':''}
             ${rs==='미반납'&&p?.type==='월납'?`<button class="btn btn-sm" onclick="openTuebanReturnModal('${st.id}','${p.num}')">반납 리스트</button>`:''}
           </td>
-        </tr>`}).join(''):'<tr><td colspan="6" class="tbl-empty">없음</td></tr>'}
+        </tr>`}).join(''):'<tr><td colspan="7" class="tbl-empty">없음</td></tr>'}
     </tbody></table>
     ${ann.length>R.limit?`<div class="load-more-wrap">총 ${ann.length}건 중 ${show.length}건<br><button class="btn" onclick="STATE.refund.limit+=20;showPage('refund')">더 보기</button></div>`:''}`;
 }
 function canClickRefund(){return currentDept==='스타터'||currentRole==='어드민'}
 function refund_process(sid){
   const st=DATA.students[sid];
-  const p=st.pads.find(pp=>pp.type==='월납')||st.pads.find(pp=>pp.type==='신규')||st.pads[0];
-  ask('환불 요청 완료',`${st.name} 학생의 환불을 <b>총무부에 요청</b>합니다.<br>${p?.type==='월납'?'월납 패드 <b>'+p.num+'</b> → 월납 창고로 복귀':p?.type==='신규'?'신규 학생이므로 환불완료 처리 (펜스는 이미 삭제대기 상태)':'환불완료로 이동'}`,'요청 완료','primary',()=>{
-    st.status='재원(환불완료)';
-    st.refundCompleteDate=todayStr();
-    st.refundCompleteBy=currentUser;
-    // 월납 → 창고로 복귀 (재고 +1)
-    if(p && p.type==='월납' && DATA.pads[p.num]){
-      DATA.pads[p.num].status='창고';
-      delete DATA.pads[p.num].studentId;
-      delete DATA.pads[p.num].tuebanDate;
-      // 펜스는 유지 (월납은 학원 소유, 같은 펜스 번호 계속 사용)
-      addHistory('환불','완료',`${st.name} · ${p.num} 월납 창고 복귀`,sid,p.num);
-    } else if(p && p.type==='신규'){
-      // 신규는 패드 자체를 학생이 가져감, 재고 변화 없음
-      // 펜스는 이미 삭제대기 상태 (퇴원 처리 때 설정됨)
-      addHistory('환불','완료',`${st.name} · 신규 (펜스는 삭제대기 유지)`,sid,p.num);
-    } else {
-      addHistory('환불','완료',st.name,sid,null);
-    }
-    toast('환불 완료 — 재고 반영됨','success');
+  if(!st){toast('학생 없음','error');return}
+  const p=st.pads.find(pp=>pp.type==='월납'&&!pp.archived)||st.pads.find(pp=>pp.type==='신규'&&!pp.archived)||st.pads[0];
+  ask('환불 요청',
+    `<div style="padding:8px 0">
+      <div style="font-size:15px;margin-bottom:10px"><b>${st.name}</b> 학생의 환불을 완료 처리합니다.</div>
+      <div style="background:#fef3c7;border:1px solid #fbbf24;padding:10px;border-radius:6px;font-size:13px;line-height:1.6">
+        ${p?.type==='월납'?'• 월납 패드 <b>'+p.num+'</b>: 이미 창고에 있음 (반납 완료 시 이동됨)<br>• 학생 상태: 환불대기 → <b>퇴원완료(환불완료)</b>':p?.type==='신규'?'• 신규 학생이므로 환불완료 처리<br>• 펜스는 이미 삭제대기 상태':'• 환불완료로 이동'}
+      </div>
+    </div>`,
+    '환불 완료','primary',()=>{
+    const refundDate=todayStr();
+    // 퇴원 상태 유지 + 환불 완료 메타 기록 (학생카드용 함수와 동일)
+    st.status='퇴원';
+    st.refundCompletedDate=refundDate;
+    st.refundCompletedBy=currentUser;
+    // 월납 패드 archived 플래그 처리 (이미 창고에 있음)
+    st.pads.forEach(pp=>{
+      if(pp.type==='월납'&&DATA.pads[pp.num]){
+        // 아직 창고에 안 들어가있으면 이동
+        if(DATA.pads[pp.num].status==='환불대기'){
+          DATA.pads[pp.num].status='창고';
+          delete DATA.pads[pp.num].studentId;
+          delete DATA.pads[pp.num].tuebanDate;
+        }
+        pp.archived=true;
+        pp.archivedStage='환불완료';
+        pp.refundCompletedDate=refundDate;
+        pp.refundCompletedBy=currentUser;
+        pp.tuebanDate=st.tuebanDate;
+        pp.tuebanBy=st.tuebanBy;
+        pp.completeDate=st.completeDate;
+      } else if(pp.type==='신규'&&!pp.archived){
+        // 신규는 패드 자체를 학생이 가져감 - archived 플래그만
+        pp.archived=true;
+        pp.archivedStage='환불완료';
+        pp.refundCompletedDate=refundDate;
+        pp.refundCompletedBy=currentUser;
+      }
+    });
+    addHistory('환불','완료',`${st.name} · 환불 완료 처리`,sid,p?.num||null);
+    // 방금 처리한 학생 기록 (상단 표시용)
+    STATE.refund.lastProcessed = sid;
+    toast(`✓ ${st.name} 환불 완료 — 퇴원완료(환불완료)`,'success');
     showPage('refund');
   });
 }
@@ -3657,11 +4186,208 @@ function renderSettings(){
       ${canEdit()&&(currentDept==='총무'||currentDept==='어드민')?`<div class="tab ${activeTab==='intake'?'active':''}" onclick="STATE.settings.tab='intake';showPage('settings')">패드 입고</div>`:''}
       ${canEdit()?`<div class="tab ${activeTab==='fenceAdd'?'active':''}" onclick="STATE.settings.tab='fenceAdd';showPage('settings')">여유 펜스 추가</div>`:''}
       ${canEdit()?`<div class="tab ${activeTab==='model'?'active':''}" onclick="STATE.settings.tab='model';showPage('settings')">기종 관리</div>`:''}
+      ${canEdit()?`<div class="tab ${activeTab==='classMgmt'?'active':''}" onclick="STATE.settings.tab='classMgmt';showPage('settings')">반 관리</div>`:''}
+      ${canEdit()?`<div class="tab ${activeTab==='freeDur'?'active':''}" onclick="STATE.settings.tab='freeDur';showPage('settings')">무료대여 시간</div>`:''}
       ${canEdit()?`<div class="tab ${activeTab==='staff'?'active':''}" onclick="STATE.settings.tab='staff';showPage('settings')">직원 관리</div>`:''}
       <div class="tab ${activeTab==='help'?'active':''}" onclick="STATE.settings.tab='help';showPage('settings')">📖 사용 가이드</div>
       ${isAdmin?`<div class="tab ${activeTab==='system'?'active':''}" onclick="STATE.settings.tab='system';showPage('settings')" style="color:var(--danger)">⚠️ 시스템</div>`:''}
     </div>
-    <div>${activeTab==='log'?(canLog?renderSetLog():renderSetHelp()):activeTab==='intake'?renderSetIntake():activeTab==='fenceAdd'?renderSetFenceAdd():activeTab==='model'?renderSetModel():activeTab==='staff'?renderSetStaff():activeTab==='help'?renderSetHelp():activeTab==='system'&&isAdmin?renderSetSystem():renderSetLog()}</div>`;
+    <div>${activeTab==='log'?(canLog?renderSetLog():renderSetHelp()):activeTab==='intake'?renderSetIntake():activeTab==='fenceAdd'?renderSetFenceAdd():activeTab==='model'?renderSetModel():activeTab==='classMgmt'?renderSetClassMgmt():activeTab==='freeDur'?renderSetFreeDur():activeTab==='staff'?renderSetStaff():activeTab==='help'?renderSetHelp():activeTab==='system'&&isAdmin?renderSetSystem():renderSetLog()}</div>`;
+}
+
+/* 반 관리 - 추가/이름수정/삭제 */
+function renderSetClassMgmt(){
+  const list = (DATA._classes || ['정규']).slice();
+  // "처리 중" 학생만 카운트 (재원 + 퇴원미반납 + 환불대기, 환불완료 제외)
+  const counts = {};
+  Object.values(DATA.students||{}).forEach(s=>{
+    // 환불완료(이력) 제외 — refundCompletedDate가 있으면 환불완료
+    if(s.refundCompletedDate) return;
+    const c = s.class || '(미지정)';
+    counts[c] = (counts[c]||0) + 1;
+  });
+  const canManage = currentDept==='어드민' || currentRole==='관리자' || currentDept==='교무';
+  return `
+    <div class="box" style="margin-bottom:16px">
+      <div class="box-title">반 관리</div>
+      <div class="box-hint">
+        반 추가 → 학생 일괄 이동 → 빈 반 삭제 순으로 작업합니다.<br>
+        엑셀 업로드 시 여기 등록된 반만 허용 (윈터/윈터스쿨 같은 중복 방지).<br>
+        <b>인원 = 재원 + 퇴원미반납 + 환불대기</b> (환불완료 제외, 처리 중인 학생만).<br>
+        <b>이동/삭제 시 안전 확인을 거칩니다.</b>
+      </div>
+      <table class="tbl" style="margin-top:12px"><thead><tr><th>반 이름</th><th>인원</th><th>작업</th></tr></thead><tbody>
+        ${list.map(c=>{
+          const cnt = counts[c]||0;
+          return `<tr>
+            <td><b>${c}</b></td>
+            <td>${cnt>0?`<span class="clickable" onclick="cls_gotoStudents('${c}')" style="font-weight:700;color:var(--primary)">${cnt}명</span>`:'<span style="color:var(--text-muted)">0명</span>'}</td>
+            <td>
+              ${canManage?`
+                <button class="btn btn-sm" onclick="cls_openMove('${c}')" ${cnt===0?'disabled title="학생 없음"':''}>학생 이동</button>
+                <button class="btn btn-sm btn-danger" onclick="cls_delete('${c}')" ${cnt>0?'disabled title="학생 있음"':''}>삭제</button>
+              `:'<span style="font-size:11px;color:var(--text-muted)">권한 없음</span>'}
+            </td>
+          </tr>`;
+        }).join('')}
+      </tbody></table>
+    </div>
+    ${canManage?`
+    <div class="box">
+      <div class="box-title">+ 반 추가</div>
+      <div class="form-row">
+        <label>새 반 이름</label>
+        <input id="cls_newName" placeholder="예: 봄특강, 여름캠프">
+        <div class="form-hint">중복 불가, 띄어쓰기 주의 (윈터/윈터 다르면 다른 반)</div>
+      </div>
+      <button class="btn btn-primary" onclick="cls_add()">+ 추가</button>
+    </div>`:''}
+  `;
+}
+// 반 클릭 시 학생 검색 페이지로 이동 (해당 반 + 처리중 = 재원+대기)
+function cls_gotoStudents(cls){
+  STATE.search.q='';
+  STATE.search.cls=cls;
+  STATE.search.statusFilter='';  // 처리중 = 재원+대기, 빈 값으로 두고 재원/대기 선택은 사용자가
+  STATE.search.page=1;
+  STATE.search.selectedId=null;
+  showPage('search');
+}
+function cls_add(){
+  const name = (document.getElementById('cls_newName').value||'').trim();
+  if(!name){toast('반 이름 입력','error');return}
+  if(!DATA._classes) DATA._classes = [];
+  if(DATA._classes.includes(name)){toast('이미 있는 반','error');return}
+  DATA._classes.push(name);
+  addHistory('설정','반추가',name+' 추가',null,null);
+  toast(`반 "${name}" 추가됨`,'success');
+  showPage('settings');
+}
+/* 학생 이동 — 다른 반으로 일괄 이동 (안전 입력 확인 포함) */
+function cls_openMove(fromCls){
+  // 처리 중 학생만 (환불완료 제외)
+  const inProgress = Object.values(DATA.students).filter(s=>(s.class||'정규')===fromCls && !s.refundCompletedDate);
+  const archived = Object.values(DATA.students).filter(s=>(s.class||'정규')===fromCls && s.refundCompletedDate);
+  if(inProgress.length===0){toast('이동할 학생 없음 (처리 중인 학생 없음)','error');return}
+  const others = (DATA._classes||[]).filter(c=>c!==fromCls);
+  if(others.length===0){toast('이동할 다른 반이 없음. 반을 먼저 추가하세요','error');return}
+  openModal(`
+    <div class="modal-title">학생 일괄 이동 — ${fromCls}</div>
+    <div class="modal-desc"><b>${fromCls}</b> 반의 처리 중 학생 <b>${inProgress.length}명</b>을 다른 반으로 이동합니다.${archived.length?`<br><span style="font-size:12px;color:var(--text-muted)">(환불완료 ${archived.length}명은 이력 보존을 위해 ${fromCls}에 그대로 유지)</span>`:''}</div>
+    <div class="form-row">
+      <label>이동할 반<span class="req">*</span></label>
+      <select id="cls_mv_to">
+        ${others.map(c=>`<option value="${c}">${c}</option>`).join('')}
+      </select>
+      <div class="form-hint">새 반은 먼저 [+ 반 추가]에서 만든 후 선택하세요</div>
+    </div>
+    <div id="cls_mv_box" style="background:#fef2f2;border:2px solid #dc2626;padding:12px;border-radius:6px;margin-bottom:14px;transition:all 0.2s">
+      <div id="cls_mv_title" style="font-size:13px;color:#991b1b;font-weight:700;margin-bottom:8px">⚠️ 안전 확인</div>
+      <div id="cls_mv_desc" style="font-size:12px;color:#7f1d1d;line-height:1.6;margin-bottom:8px">
+        ${inProgress.length}명의 학생 반이 모두 변경됩니다. 실수 방지를 위해 아래에 <b>"이동"</b> 두 글자를 입력하세요.
+      </div>
+      <input id="cls_mv_confirm" placeholder="이동 (정확히 두 글자)" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:4px;font-size:14px;font-family:inherit" oninput="cls_mv_checkInput()">
+    </div>
+    <div class="modal-actions"><button class="btn" onclick="closeModal()">취소</button><button id="cls_mv_btn" class="btn" disabled style="opacity:0.5;cursor:not-allowed" onclick="cls_doMove('${fromCls}')">이동 실행</button></div>
+  `);
+}
+// 안전 확인 입력 시 시각 피드백
+function cls_mv_checkInput(){
+  const val = (document.getElementById('cls_mv_confirm').value||'').trim();
+  const box = document.getElementById('cls_mv_box');
+  const title = document.getElementById('cls_mv_title');
+  const desc = document.getElementById('cls_mv_desc');
+  const btn = document.getElementById('cls_mv_btn');
+  if(val === '이동'){
+    box.style.background = '#dcfce7';
+    box.style.borderColor = '#16a34a';
+    title.innerHTML = '✓ 안전 확인 완료';
+    title.style.color = '#15803d';
+    desc.innerHTML = '"이동" 입력 확인됨. <b>이동 실행</b> 버튼을 클릭하세요.';
+    desc.style.color = '#166534';
+    btn.disabled = false;
+    btn.style.opacity = '1';
+    btn.style.cursor = 'pointer';
+    btn.classList.remove('btn');
+    btn.classList.add('btn','btn-danger');
+  } else {
+    box.style.background = '#fef2f2';
+    box.style.borderColor = '#dc2626';
+    title.innerHTML = '⚠️ 안전 확인';
+    title.style.color = '#991b1b';
+    desc.style.color = '#7f1d1d';
+    btn.disabled = true;
+    btn.style.opacity = '0.5';
+    btn.style.cursor = 'not-allowed';
+    btn.classList.remove('btn-danger');
+  }
+}
+
+function cls_doMove(fromCls){
+  const toCls = document.getElementById('cls_mv_to').value;
+  const confirm = document.getElementById('cls_mv_confirm').value.trim();
+  if(!toCls){toast('이동할 반 선택','error');return}
+  if(confirm !== '이동'){toast('"이동"을 정확히 입력하세요','error');return}
+  // 처리 중만 이동 (환불완료는 이력 보존)
+  const affected = Object.values(DATA.students).filter(s=>(s.class||'정규')===fromCls && !s.refundCompletedDate);
+  affected.forEach(s=>{ s.class = toCls; });
+  addHistory('설정','반이동',`${fromCls} → ${toCls} (${affected.length}명 일괄, 환불완료 제외)`,null,null);
+  closeModal();
+  toast(`✓ ${affected.length}명 이동: ${fromCls} → ${toCls}`,'success');
+  showPage('settings');
+}
+
+function cls_delete(name){
+  // 처리 중 학생만 카운트 (환불완료 제외 — 이력은 그대로)
+  const cnt = Object.values(DATA.students).filter(s=>(s.class||'정규')===name && !s.refundCompletedDate).length;
+  if(cnt>0){toast(`이 반에 처리 중 학생 ${cnt}명 있음. 먼저 다른 반으로 이동하세요`,'error');return}
+  // 환불완료 이력 학생들 확인
+  const archivedCnt = Object.values(DATA.students).filter(s=>(s.class||'정규')===name && s.refundCompletedDate).length;
+  ask('반 삭제',`반 <b>${name}</b>을(를) 삭제하시겠습니까?<br>(처리 중 학생 0명이라 안전합니다)${archivedCnt?`<br><span style="font-size:12px;color:var(--text-muted)">환불완료 이력 ${archivedCnt}명은 ${name}으로 기록 유지됩니다.</span>`:''}`,'삭제','danger',()=>{
+    DATA._classes = (DATA._classes||[]).filter(c=>c!==name);
+    addHistory('설정','반삭제',name+' 삭제',null,null);
+    toast(`반 "${name}" 삭제됨`,'success');
+    showPage('settings');
+  });
+}
+
+/* 무료대여 사용 시간 옵션 관리 */
+function renderSetFreeDur(){
+  const list = (DATA._freeLendDurations || [15,30,45,60,120,180]).slice().sort((a,b)=>a-b);
+  return `
+    <div class="box" style="margin-bottom:16px">
+      <div class="box-title">무료대여 사용 시간 옵션</div>
+      <div class="box-hint">학생이 예상하는 사용 시간 (15분 단위). 무료대여 등록 화면 드롭다운에 나타납니다.</div>
+      <div style="margin-top:12px;display:flex;flex-wrap:wrap;gap:8px">
+        ${list.map(m=>`<span class="badge badge-blue" style="font-size:13px;padding:6px 10px">${m<60?m+'분':(m/60)+'시간'+(m%60?' '+(m%60)+'분':'')} <button onclick="freeDur_remove(${m})" style="background:none;border:none;color:#fff;margin-left:4px;cursor:pointer;font-weight:bold">×</button></span>`).join('')}
+      </div>
+    </div>
+    <div class="box">
+      <div class="box-title">시간 옵션 추가</div>
+      <div class="form-row">
+        <label>시간 (분 단위, 15분의 배수)</label>
+        <input id="freeDur_input" type="number" step="15" min="15" placeholder="예: 15, 30, 60, 90, 120">
+        <div class="form-hint">예: 30 → 30분 / 60 → 1시간 / 90 → 1시간 30분</div>
+      </div>
+      <button class="btn btn-primary" onclick="freeDur_add()">+ 추가</button>
+    </div>
+  `;
+}
+function freeDur_add(){
+  const v = parseInt(document.getElementById('freeDur_input').value);
+  if(!v || v<15 || v%15!==0){toast('15분 단위로 입력 (15, 30, 45, 60 ...)','error');return}
+  if(!DATA._freeLendDurations) DATA._freeLendDurations=[];
+  if(DATA._freeLendDurations.includes(v)){toast('이미 있음','error');return}
+  DATA._freeLendDurations.push(v);
+  DATA._freeLendDurations.sort((a,b)=>a-b);
+  addHistory('설정','무료시간추가',v+'분 추가',null,null);
+  toast('추가 완료','success');showPage('settings');
+}
+function freeDur_remove(m){
+  if(!DATA._freeLendDurations) return;
+  DATA._freeLendDurations = DATA._freeLendDurations.filter(x=>x!==m);
+  addHistory('설정','무료시간삭제',m+'분 삭제',null,null);
+  toast('삭제 완료','success');showPage('settings');
 }
 
 /* 여유 펜스 추가 (건바이건 + 일괄) */
@@ -4419,13 +5145,15 @@ function renderSetLog(){
   if(L.logType) list=list.filter(h=>h.type===L.logType);
   if(L.logAction) list=list.filter(h=>h.action===L.logAction);
   if(L.logBy){const q=L.logBy.toLowerCase();list=list.filter(h=>h.user?.toLowerCase().includes(q))}
+  if(L.logCls){list=list.filter(h=>{if(!h.studentId) return false;const st=DATA.students[h.studentId];return st && (st.class||'정규')===L.logCls})}
   if(L.logFrom||L.logTo) list=list.filter(h=>{const d=h.date.slice(0,10);return dateInRange(d,L.logFrom,L.logTo)});
   const types=[...new Set(DATA.history.map(h=>h.type))];
   const actions=[...new Set(DATA.history.map(h=>h.action))];
   const show=list.slice(0,50);
   return `
-    <div class="filter-bar" style="grid-template-columns:1.5fr 1fr 1fr 1fr 1fr auto">
+    <div class="filter-bar" style="grid-template-columns:1.5fr 1fr 1fr 1fr 1fr 1fr auto">
       <div class="filter-field"><label>상세 검색</label><input value="${L.logQ||''}" oninput="STATE.settings.logQ=this.value;showPage('settings')"></div>
+      <div class="filter-field"><label>반</label><select onchange="STATE.settings.logCls=this.value;showPage('settings')"><option value="" ${!L.logCls?'selected':''}>전체</option>${getAllClasses().map(c=>`<option value="${c}" ${L.logCls===c?'selected':''}>${c}</option>`).join('')}</select></div>
       <div class="filter-field"><label>유형</label><select onchange="STATE.settings.logType=this.value;showPage('settings')"><option value="" ${!L.logType?'selected':''}>전체</option>${types.map(t=>`<option value="${t}" ${L.logType===t?'selected':''}>${t}</option>`).join('')}</select></div>
       <div class="filter-field"><label>작업</label><select onchange="STATE.settings.logAction=this.value;showPage('settings')"><option value="" ${!L.logAction?'selected':''}>전체</option>${actions.map(a=>`<option value="${a}" ${L.logAction===a?'selected':''}>${a}</option>`).join('')}</select></div>
       <div class="filter-field"><label>담당자</label><input value="${L.logBy||''}" oninput="STATE.settings.logBy=this.value;showPage('settings')"></div>
@@ -4433,7 +5161,7 @@ function renderSetLog(){
       <div class="filter-field"><label>&nbsp;</label><button class="btn btn-excel" onclick="dlLog()">엑셀</button></div>
     </div>
     <table class="tbl"><thead><tr><th>시각</th><th>유형</th><th>작업</th><th>상세</th><th>담당</th></tr></thead><tbody>
-      ${show.length?show.map(h=>`<tr><td style="font-size:12px;color:var(--text-muted)">${h.date}</td><td><span class="badge badge-gray">${h.type}</span></td><td>${h.action}</td><td>${h.studentId?`<span class="clickable" onclick="openStudentModal('${h.studentId}')">${h.detail}</span>`:h.detail}</td><td style="font-size:12px;color:var(--text-muted)">${h.user}</td></tr>`).join(''):'<tr><td colspan="5" class="tbl-empty">로그 없음</td></tr>'}
+      ${show.length?show.map(h=>`<tr><td style="font-size:12px;color:var(--text-muted)">${h.date}</td><td><span class="badge badge-gray">${h.type}</span></td><td>${h.action}</td><td>${h.studentId?`<span class="clickable" onclick="openStudentModal('${h.studentId}')">${h.detail}</span>${classBadge(DATA.students[h.studentId])}`:h.detail}</td><td style="font-size:12px;color:var(--text-muted)">${h.user}</td></tr>`).join(''):'<tr><td colspan="5" class="tbl-empty">로그 없음</td></tr>'}
     </tbody></table>
     ${list.length>50?`<div class="load-more-wrap">총 ${list.length}건 중 50건 표시</div>`:''}`;
 }
@@ -4624,6 +5352,19 @@ if(window.__firebaseDb){
   initData();
 }
 document.getElementById('modalBg').addEventListener('click',(e)=>{if(e.target.id==='modalBg') closeModal()});
+
+// 한글 IME 조합 감지 (검색창 입력 중 재렌더로 글자 깨지는 것 방지)
+window.__imeComposing = false;
+window.__pendingPage = null;
+document.addEventListener('compositionstart', ()=>{ window.__imeComposing = true; });
+document.addEventListener('compositionend', ()=>{
+  window.__imeComposing = false;
+  if(window.__pendingPage){
+    const p = window.__pendingPage;
+    window.__pendingPage = null;
+    showPage(p);
+  }
+});
 
 </script>
 </body>
