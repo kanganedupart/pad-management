@@ -638,6 +638,14 @@ function renderNav(){
   document.getElementById('headerNav').innerHTML=getMenu().map(m=>
     `<div class="nav-item ${currentPage===m?'active':''}" onclick="showPage('${m}')">${MENU_LABELS[m]}</div>`).join('');
 }
+
+// 검색 입력용 디바운스 (한글 IME 보호 + 빠른 입력 시 렌더 부담 줄이기)
+let _searchDebounceTimer = null;
+function _debouncedShowPage(p){
+  if(_searchDebounceTimer) clearTimeout(_searchDebounceTimer);
+  _searchDebounceTimer = setTimeout(()=>{ showPage(p); }, 250);
+}
+
 function showPage(p){
   // 한글 IME 조합 중이면 재렌더 스킵 (조합 깨짐 방지)
   if(window.__imeComposing){
@@ -1925,7 +1933,7 @@ function renderTuebanTab(){
     </div>
     <div class="section-label">퇴원 진행 중 (${list.length}명${M.tuebanCls||M.tuebanQ||M.tuebanStatus?` · 전체 ${inProgress.length}명 중`:''})</div>
     <div class="filter-bar" style="grid-template-columns:1.5fr 0.8fr 0.9fr 0.8fr auto">
-      <div class="filter-field"><label>학생 검색</label><input value="${M.tuebanQ||''}" placeholder="학생명" oninput="STATE.monthlyAssign.tuebanQ=this.value;showPage('monthlyAssign')"></div>
+      <div class="filter-field"><label>학생 검색</label><input value="${M.tuebanQ||''}" placeholder="학생명" oninput="STATE.monthlyAssign.tuebanQ=this.value;_debouncedShowPage('monthlyAssign')"></div>
       <div class="filter-field"><label>반</label><select onchange="STATE.monthlyAssign.tuebanCls=this.value;showPage('monthlyAssign')"><option value="" ${!M.tuebanCls?'selected':''}>전체</option>${classes.map(c=>`<option value="${c}" ${M.tuebanCls===c?'selected':''}>${c}</option>`).join('')}</select></div>
       <div class="filter-field"><label>상태</label><select onchange="STATE.monthlyAssign.tuebanStatus=this.value;showPage('monthlyAssign')"><option value="" ${!M.tuebanStatus?'selected':''}>전체</option><option value="퇴원미반납" ${M.tuebanStatus==='퇴원미반납'?'selected':''}>퇴원 미반납</option><option value="환불대기" ${M.tuebanStatus==='환불대기'?'selected':''}>환불대기</option></select></div>
       <div class="filter-field"><label>정렬</label><select onchange="STATE.monthlyAssign.tuebanSort=this.value;showPage('monthlyAssign')"><option value="completeOld" ${sortType==='completeOld'?'selected':''}>회수순</option><option value="nameAsc" ${sortType==='nameAsc'?'selected':''}>이름순</option></select></div>
@@ -2413,7 +2421,7 @@ function renderAssignHistory(type){
   const classes = getAllClasses();
   return `
     <div class="filter-bar" style="grid-template-columns:1.5fr 0.8fr 0.8fr 0.8fr auto auto">
-      <div class="filter-field"><label>검색 (학생/패드/담당)</label><input value="${ST.histQ||''}" oninput="STATE.${stateKey}.histQ=this.value;showPage('${stateKey}')"></div>
+      <div class="filter-field"><label>검색 (학생/패드/담당)</label><input value="${ST.histQ||''}" oninput="STATE.${stateKey}.histQ=this.value;_debouncedShowPage('${stateKey}')"></div>
       <div class="filter-field"><label>반</label><select onchange="STATE.${stateKey}.histCls=this.value;showPage('${stateKey}')"><option value="" ${!ST.histCls?'selected':''}>전체</option>${classes.map(c=>`<option value="${c}" ${ST.histCls===c?'selected':''}>${c}</option>`).join('')}</select></div>
       <div class="filter-field"><label>from</label><input type="date" value="${ST.histFrom||''}" onchange="STATE.${stateKey}.histFrom=this.value;showPage('${stateKey}')"></div>
       <div class="filter-field"><label>to</label><input type="date" value="${ST.histTo||''}" onchange="STATE.${stateKey}.histTo=this.value;showPage('${stateKey}')"></div>
@@ -3015,7 +3023,7 @@ function renderFreeHistory(){
   return `
     ${isDefaultView?'<div style="background:#fef3c7;border:1px solid #fbbf24;padding:8px 12px;border-radius:6px;margin-bottom:12px;font-size:12px;color:#92400e">기본 화면: <b>미반납·대여중 전체 + 오늘 반납분</b>만 표시. 과거 반납 이력은 [상태=반납] 또는 기간 필터로 조회</div>':''}
     <div class="filter-bar" style="grid-template-columns:1.5fr 0.8fr 0.8fr 0.8fr 0.8fr auto auto">
-      <div class="filter-field"><label>검색 (학생/패드/담당자)</label><input value="${F.q||''}" oninput="STATE.free.q=this.value;showPage('freeRent')"></div>
+      <div class="filter-field"><label>검색 (학생/패드/담당자)</label><input value="${F.q||''}" oninput="STATE.free.q=this.value;_debouncedShowPage('freeRent')"></div>
       <div class="filter-field"><label>반</label><select onchange="STATE.free.cls=this.value;showPage('freeRent')"><option value="" ${!F.cls?'selected':''}>전체</option>${classes.map(c=>`<option value="${c}" ${F.cls===c?'selected':''}>${c}</option>`).join('')}</select></div>
       <div class="filter-field"><label>상태</label><select onchange="STATE.free.status=this.value;showPage('freeRent')"><option value="" ${!F.status?'selected':''}>전체</option><option value="미반납" ${F.status==='미반납'?'selected':''}>미반납</option><option value="대여중" ${F.status==='대여중'?'selected':''}>대여중</option><option value="반납" ${F.status==='반납'?'selected':''}>반납</option></select></div>
       <div class="filter-field"><label>from</label><input type="date" value="${F.from||''}" onchange="STATE.free.from=this.value;showPage('freeRent')"></div>
@@ -3181,10 +3189,10 @@ function renderInvList(){
     ${dashSection}
 
     <div class="filter-bar" style="grid-template-columns:1.3fr 0.8fr 0.8fr 0.8fr 0.8fr auto">
-      <div class="filter-field"><label>검색 (번호/학생/펜스)</label><input value="${I.q||''}" oninput="STATE.inventory.q=this.value;showPage('inventory')"></div>
+      <div class="filter-field"><label>검색 (번호/학생/펜스)</label><input value="${I.q||''}" oninput="STATE.inventory.q=this.value;_debouncedShowPage('inventory')"></div>
       <div class="filter-field"><label>반</label><select onchange="STATE.inventory.cls=this.value;showPage('inventory')"><option value="" ${!I.cls?'selected':''}>전체</option>${getAllClasses().map(c=>`<option value="${c}" ${I.cls===c?'selected':''}>${c}</option>`).join('')}</select></div>
       <div class="filter-field"><label>상태</label><select onchange="STATE.inventory.status=this.value;showPage('inventory')"><option value="" ${!I.status?'selected':''}>전체</option>${allStatuses.map(s=>`<option value="${s}" ${I.status===s?'selected':''}>${statusLabel(s)}</option>`).join('')}</select></div>
-      <div class="filter-field"><label>담당자</label><input value="${I.by||''}" oninput="STATE.inventory.by=this.value;showPage('inventory')"></div>
+      <div class="filter-field"><label>담당자</label><input value="${I.by||''}" oninput="STATE.inventory.by=this.value;_debouncedShowPage('inventory')"></div>
       <div class="filter-field"><label>배부일 from</label><input type="date" value="${I.from||''}" onchange="STATE.inventory.from=this.value;showPage('inventory')"></div>
       <div class="filter-field"><label>&nbsp;</label><button class="btn btn-sm" onclick="STATE.inventory.q='';STATE.inventory.cls='';STATE.inventory.status='';STATE.inventory.by='';STATE.inventory.from='';STATE.inventory.to='';showPage('inventory')">초기화</button></div>
     </div>
@@ -3339,7 +3347,7 @@ function renderInvBroken(){
       <button class="btn btn-sm" onclick="br_setRange(0)">전체</button>
     </div>`:''}
     <div class="filter-bar" style="grid-template-columns:${curView!=='active'?'1.5fr 0.8fr 0.8fr 0.8fr auto':'1.5fr 0.8fr auto'}">
-      <div class="filter-field"><label>검색 (패드/학생/담당자)</label><input value="${I.brokenQ||''}" oninput="STATE.inventory.brokenQ=this.value;showPage('inventory')"></div>
+      <div class="filter-field"><label>검색 (패드/학생/담당자)</label><input value="${I.brokenQ||''}" oninput="STATE.inventory.brokenQ=this.value;_debouncedShowPage('inventory')"></div>
       <div class="filter-field"><label>단계</label><select onchange="STATE.inventory.brokenStage=this.value;showPage('inventory')"><option value="" ${!I.brokenStage?'selected':''}>전체</option>${stageOpts.map(s=>`<option value="${s}" ${I.brokenStage===s?'selected':''}>${s}</option>`).join('')}</select></div>
       ${curView!=='active'?`<div class="filter-field"><label>기간 from</label><input type="date" value="${I.brokenFrom||''}" onchange="STATE.inventory.brokenFrom=this.value;showPage('inventory')"></div>
       <div class="filter-field"><label>to</label><input type="date" value="${I.brokenTo||''}" onchange="STATE.inventory.brokenTo=this.value;showPage('inventory')"></div>`:''}
@@ -4104,7 +4112,7 @@ function renderFenceAll(){
   if(F.q){const q=F.q.toLowerCase();all=all.filter(f=>f.num.toLowerCase().includes(q)||f.padNum?.toLowerCase().includes(q)||f.studentId?.toLowerCase().includes(q))}
   return `
     <div class="filter-bar-simple">
-      <input style="flex:1;padding:11px 14px;border:1px solid var(--border);border-radius:8px;font-size:14px;font-family:inherit" value="${F.q||''}" placeholder="펜스/패드/학생 검색" oninput="STATE.fences.q=this.value;showPage('fences')">
+      <input style="flex:1;padding:11px 14px;border:1px solid var(--border);border-radius:8px;font-size:14px;font-family:inherit" value="${F.q||''}" placeholder="펜스/패드/학생 검색" oninput="STATE.fences.q=this.value;_debouncedShowPage('fences')">
       <button class="btn" onclick="STATE.fences.q='';showPage('fences')">초기화</button>
       <button class="btn btn-excel" onclick="dlFences()">엑셀</button>
     </div>
@@ -4238,7 +4246,7 @@ function renderRefund(){
       <div class="summary-item muted"><b>${counts['환불완료']}</b>환불완료</div>
     </div>
     <div class="filter-bar" style="grid-template-columns:1.2fr 0.8fr 0.9fr 1.2fr 0.8fr 0.8fr auto">
-      <div class="filter-field"><label>학생 검색</label><input value="${R.q||''}" placeholder="학생명" oninput="STATE.refund.q=this.value;showPage('refund')"></div>
+      <div class="filter-field"><label>학생 검색</label><input value="${R.q||''}" placeholder="학생명" oninput="STATE.refund.q=this.value;_debouncedShowPage('refund')"></div>
       <div class="filter-field"><label>반</label><select onchange="STATE.refund.cls=this.value;showPage('refund')"><option value="" ${!R.cls?'selected':''}>전체</option>${classes.map(c=>`<option value="${c}" ${R.cls===c?'selected':''}>${c}</option>`).join('')}</select></div>
       <div class="filter-field"><label>상태</label><select onchange="STATE.refund.status=this.value;STATE.refund.sort='';showPage('refund')"><option value="" ${!R.status?'selected':''}>전체</option><option value="환불대기" ${R.status==='환불대기'?'selected':''}>환불대기</option><option value="미반납" ${R.status==='미반납'?'selected':''}>퇴원 미반납</option><option value="환불완료" ${R.status==='환불완료'?'selected':''}>환불완료</option></select></div>
       <div class="filter-field"><label>정렬</label><select onchange="STATE.refund.sort=this.value;showPage('refund')"><option value="completeOld" ${sortType==='completeOld'?'selected':''}>회수순</option><option value="nameAsc" ${sortType==='nameAsc'?'selected':''}>이름순</option><option value="recentDone" ${sortType==='recentDone'?'selected':''}>퇴반순</option></select></div>
@@ -5314,11 +5322,11 @@ function renderSetLog(){
   const show=list.slice(0,50);
   return `
     <div class="filter-bar" style="grid-template-columns:1.5fr 1fr 1fr 1fr 1fr 1fr auto">
-      <div class="filter-field"><label>상세 검색</label><input value="${L.logQ||''}" oninput="STATE.settings.logQ=this.value;showPage('settings')"></div>
+      <div class="filter-field"><label>상세 검색</label><input value="${L.logQ||''}" oninput="STATE.settings.logQ=this.value;_debouncedShowPage('settings')"></div>
       <div class="filter-field"><label>반</label><select onchange="STATE.settings.logCls=this.value;showPage('settings')"><option value="" ${!L.logCls?'selected':''}>전체</option>${getAllClasses().map(c=>`<option value="${c}" ${L.logCls===c?'selected':''}>${c}</option>`).join('')}</select></div>
       <div class="filter-field"><label>유형</label><select onchange="STATE.settings.logType=this.value;showPage('settings')"><option value="" ${!L.logType?'selected':''}>전체</option>${types.map(t=>`<option value="${t}" ${L.logType===t?'selected':''}>${t}</option>`).join('')}</select></div>
       <div class="filter-field"><label>작업</label><select onchange="STATE.settings.logAction=this.value;showPage('settings')"><option value="" ${!L.logAction?'selected':''}>전체</option>${actions.map(a=>`<option value="${a}" ${L.logAction===a?'selected':''}>${a}</option>`).join('')}</select></div>
-      <div class="filter-field"><label>담당자</label><input value="${L.logBy||''}" oninput="STATE.settings.logBy=this.value;showPage('settings')"></div>
+      <div class="filter-field"><label>담당자</label><input value="${L.logBy||''}" oninput="STATE.settings.logBy=this.value;_debouncedShowPage('settings')"></div>
       <div class="filter-field"><label>from</label><input type="date" value="${L.logFrom||''}" onchange="STATE.settings.logFrom=this.value;showPage('settings')"></div>
       <div class="filter-field"><label>&nbsp;</label><button class="btn btn-excel" onclick="dlLog()">엑셀</button></div>
     </div>
