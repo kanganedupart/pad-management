@@ -389,6 +389,14 @@ function fbLoadAll(cb){
       DATA.assignHistory = val.assignHistory || [];
       DATA.brokenHistory = val.brokenHistory || [];
       DATA.staff = val.staff || {};
+      // 추가 마스터 데이터 복원 (반/기종/무료대여 시간)
+      DATA._classes = val._classes || ['정규','윈터','지파'];
+      DATA._freeLendDurations = val._freeLendDurations || [15,30,45,60,120,180];
+      // 기종(MODELS) 복원
+      if(val._models && typeof MODELS !== 'undefined'){
+        Object.keys(MODELS).forEach(k=>delete MODELS[k]);
+        Object.assign(MODELS, val._models);
+      }
       // admin 항상 보장
       if(!DATA.staff.admin){
         DATA.staff.admin = {id:'admin',name:'어드민',dept:'어드민',role:'어드민',pw:'3500'};
@@ -419,7 +427,10 @@ function fbSaveNow(){
     freeHistory: DATA.freeHistory || [],
     assignHistory: DATA.assignHistory || [],
     brokenHistory: DATA.brokenHistory || [],
-    staff: DATA.staff || {}
+    staff: DATA.staff || {},
+    _classes: DATA._classes || ['정규','윈터','지파'],
+    _models: (typeof MODELS!=='undefined' ? MODELS : {}),
+    _freeLendDurations: DATA._freeLendDurations || [15,30,45,60,120,180]
   };
   return window.__firebaseDb.ref('/').set(payload).then(()=>{
     window.__fbSaveInFlight--;
@@ -2464,9 +2475,18 @@ function dlSearchExcel(){
   downloadCSV('학생검색_'+todayStr()+'.csv',rows);
 }
 function dlAssignHist(type){
-  const list=DATA.assignHistory.filter(h=>h.type===type);
-  const rows=[['배부일','학생','패드','펜스','방법','담당','메모']];
-  list.forEach(h=>rows.push([h.assignedDate,h.studentId,h.padNum,h.fenceNum,h.method||'',h.assignedBy,h.memo||'']));
+  const stateKey = type==='신규'?'newAssign':'monthlyAssign';
+  const ST = STATE[stateKey];
+  let list=DATA.assignHistory.filter(h=>h.type===type);
+  // 화면과 동일 필터
+  if(ST.histQ){const q=ST.histQ.toLowerCase();list=list.filter(h=>h.studentId?.toLowerCase().includes(q)||h.padNum?.toLowerCase().includes(q)||h.assignedBy?.toLowerCase().includes(q))}
+  if(ST.histCls){list=list.filter(h=>{const st=DATA.students[h.studentId];return st && (st.class||'정규')===ST.histCls})}
+  if(ST.histFrom||ST.histTo) list=list.filter(h=>dateInRange(h.assignedDate,ST.histFrom,ST.histTo));
+  const rows=[['배부일','학생','반','패드','펜스','방법','담당','메모']];
+  list.forEach(h=>{
+    const st=DATA.students[h.studentId];
+    rows.push([h.assignedDate,h.studentId,st?.class||'',h.padNum,h.fenceNum,h.method||'',h.assignedBy,h.memo||'']);
+  });
   downloadCSV(type+'_배부이력_'+todayStr()+'.csv',rows);
 }
 
@@ -3045,10 +3065,25 @@ function renderFreeHistory(){
     ${all.length>F.limit?`<div class="load-more-wrap">총 ${all.length}건 중 ${show.length}건<br><button class="btn" onclick="STATE.free.limit+=20;showPage('freeRent')">더 보기</button></div>`:''}`;
 }
 function dlFreeHist(){
+  const F=STATE.free;
   const active=Object.values(DATA.pads).filter(p=>p.type==='무료'&&p.status==='대여중').map(p=>({padNum:p.num,studentId:p.studentId,startDate:p.startDate,endDate:p.endDate,returnDate:null,reason:p.reason,returnMemo:'',assignedBy:p.assignedBy,returnedBy:null,status:isOverdueFree(p)?'미반납':'대여중'}));
-  const all=active.concat(DATA.freeHistory);
-  const rows=[['상태','학생','패드','대여일','반납예정','실제반납','사유','대여담당','반납담당','메모']];
-  all.forEach(h=>rows.push([h.status,h.studentId,h.padNum,h.startDate,h.endDate,h.returnDate||'',h.reason||'',h.assignedBy||'',h.returnedBy||'',h.returnMemo||'']));
+  let all=active.concat(DATA.freeHistory);
+  // 화면과 동일 필터링
+  if(F.q){const q=F.q.toLowerCase();all=all.filter(h=>h.studentId?.toLowerCase().includes(q)||h.padNum.toLowerCase().includes(q)||h.assignedBy?.toLowerCase().includes(q)||h.returnedBy?.toLowerCase().includes(q))}
+  if(F.status) all=all.filter(h=>h.status===F.status);
+  if(F.cls){all=all.filter(h=>{const st=DATA.students[h.studentId];return st && (st.class||'정규')===F.cls})}
+  if(F.from||F.to) all=all.filter(h=>rangeOverlap(h.startDate,h.returnDate||h.endDate,F.from,F.to));
+  // 기본 보기 시 반납은 오늘만
+  const isDefaultView = !F.status && !F.q && !F.from && !F.to && !F.cls;
+  if(isDefaultView){
+    const today = todayStr();
+    all = all.filter(h => h.status!=='반납' || h.returnDate===today);
+  }
+  const rows=[['상태','학생','반','패드','대여일','반납예정','실제반납','사유','대여담당','반납담당','메모']];
+  all.forEach(h=>{
+    const st=DATA.students[h.studentId];
+    rows.push([h.status,h.studentId,st?.class||'',h.padNum,h.startDate,h.endDate,h.returnDate||'',h.reason||'',h.assignedBy||'',h.returnedBy||'',h.returnMemo||'']);
+  });
   downloadCSV('무료대여이력_'+todayStr()+'.csv',rows);
 }
 
@@ -3645,19 +3680,41 @@ function br_doComplete(num){
   showPage('inventory');
 }
 function dlInvExcel(){
-  if(STATE.inventory.tab==='broken'){
+  const I=STATE.inventory;
+  if(I.tab==='broken'){
+    const stageOpts=['AS접수대기','AS진행중','수리완료','폐기'];
+    let brokenList = Object.values(DATA.pads).filter(p=>p.broken).map(p=>({...p.broken,padNum:p.num,model:p.model,active:true}));
+    let archivedList = (DATA.brokenHistory||[]).map(h=>({...h,padNum:h.padNum,active:false}));
+    let all = brokenList.concat(archivedList);
+    if(I.brokenQ){const q=I.brokenQ.toLowerCase();all=all.filter(h=>h.padNum?.toLowerCase().includes(q)||h.prevStudent?.toLowerCase().includes(q)||h.receiveBy?.toLowerCase().includes(q)||h.sendBy?.toLowerCase().includes(q)||h.completeBy?.toLowerCase().includes(q))}
+    if(I.brokenStage) all=all.filter(h=>h.stage===I.brokenStage || (!h.active && (I.brokenStage==='수리완료'||I.brokenStage==='폐기')));
+    if(I.brokenFrom||I.brokenTo) all=all.filter(h=>rangeOverlap(h.receiveDate,h.completeDate||h.sendDate||h.receiveDate,I.brokenFrom,I.brokenTo));
     const rows=[['패드','종류','단계','접수일','접수담당','발송일','발송담당','수령일','수령담당','최종','이전학생','메모']];
-    Object.values(DATA.pads).filter(p=>p.broken).forEach(p=>{const b=p.broken;rows.push([p.num,b.type,b.stage,b.receiveDate||'',b.receiveBy||'',b.sendDate||'',b.sendBy||'','','','',b.prevStudent||'',b.memo||''])});
-    DATA.brokenHistory.forEach(h=>rows.push([h.padNum,h.type,'완료',h.receiveDate||'',h.receiveBy||'',h.sendDate||'',h.sendBy||'',h.completeDate||'',h.completeBy||'',(h.finalType||'')+' '+(h.finalStatus||''),h.prevStudent||'',h.memo||'']));
+    all.forEach(h=>{
+      if(h.active){
+        rows.push([h.padNum,h.type,h.stage,h.receiveDate||'',h.receiveBy||'',h.sendDate||'',h.sendBy||'','','','',h.prevStudent||'',h.memo||'']);
+      } else {
+        rows.push([h.padNum,h.type,'완료',h.receiveDate||'',h.receiveBy||'',h.sendDate||'',h.sendBy||'',h.completeDate||'',h.completeBy||'',(h.finalType||'')+' '+(h.finalStatus||''),h.prevStudent||'',h.memo||'']);
+      }
+    });
     downloadCSV('파손고장_'+todayStr()+'.csv',rows);return;
   }
+  // 재고 탭들 - 화면과 동일 필터
   let pads=Object.values(DATA.pads).filter(p=>p.status!=='파손'&&p.status!=='고장');
-  if(STATE.inventory.tab==='new') pads=pads.filter(p=>p.type==='신규');
-  else if(STATE.inventory.tab==='monthly') pads=pads.filter(p=>p.type==='월납');
-  else if(STATE.inventory.tab==='free') pads=pads.filter(p=>p.type==='무료');
-  const rows=[['번호','기종','종류','상태','학생','펜스','배부일','담당']];
-  pads.forEach(p=>rows.push([p.num,p.model||'',p.type,p.status,p.studentId||'',p.fenceNum||'',p.assignedDate||'',p.assignedBy||'']));
-  downloadCSV('재고_'+STATE.inventory.tab+'_'+todayStr()+'.csv',rows);
+  if(I.tab==='new') pads=pads.filter(p=>p.type==='신규');
+  else if(I.tab==='monthly') pads=pads.filter(p=>p.type==='월납');
+  else if(I.tab==='free') pads=pads.filter(p=>p.type==='무료');
+  if(I.q){const q=I.q.toLowerCase();pads=pads.filter(p=>p.num.toLowerCase().includes(q)||p.studentId?.toLowerCase().includes(q)||p.fenceNum?.toLowerCase().includes(q))}
+  if(I.cls){pads=pads.filter(p=>{const st=DATA.students[p.studentId];return st && (st.class||'정규')===I.cls})}
+  if(I.status) pads=pads.filter(p=>p.status===I.status);
+  if(I.by){const q=I.by.toLowerCase();pads=pads.filter(p=>p.assignedBy?.toLowerCase().includes(q))}
+  if(I.from||I.to) pads=pads.filter(p=>dateInRange(p.assignedDate,I.from,I.to));
+  const rows=[['번호','기종','종류','상태','학생','반','펜스','배부일','담당']];
+  pads.forEach(p=>{
+    const st=DATA.students[p.studentId];
+    rows.push([p.num,p.model||'',p.type,p.status,p.studentId||'',st?.class||'',p.fenceNum||'',p.assignedDate||'',p.assignedBy||'']);
+  });
+  downloadCSV('재고_'+I.tab+'_'+todayStr()+'.csv',rows);
 }
 
 /* ============ 펜스 관리 ============ */
@@ -4147,8 +4204,12 @@ function fence_confirmAdd(num){
   });
 }
 function dlFences(){
+  const F=STATE.fences;
+  let fences = Object.values(DATA.fences);
+  // 화면과 동일 필터
+  if(F.q){const q=F.q.toLowerCase();fences=fences.filter(f=>f.num?.toLowerCase().includes(q)||f.padNum?.toLowerCase().includes(q)||f.studentId?.toLowerCase().includes(q))}
   const rows=[['번호','종류','상태','연결패드','학생','삭제일','삭제담당','메모']];
-  Object.values(DATA.fences).forEach(f=>rows.push([f.num,f.type,f.status,f.padNum||'',f.studentId||'',f.deletedDate||'',f.deletedBy||'',f.historyNotes||f.reason||'']));
+  fences.forEach(f=>rows.push([f.num,f.type,f.status,f.padNum||'',f.studentId||'',f.deletedDate||'',f.deletedBy||'',f.historyNotes||f.reason||'']));
   downloadCSV('펜스현황_'+todayStr()+'.csv',rows);
 }
 
@@ -4333,10 +4394,49 @@ function refund_process(sid){
     showPage('refund');
   });
 }
+/* 환불 상태 판별 (전역 - dlRefund 등에서도 사용) */
+function getRefundStatus(st){
+  if(st.refundCompletedDate) return '환불완료';
+  if(st.status==='환불대기') return '환불대기';
+  const mp=st.pads.find(p=>p.type==='월납'&&!p.archived);
+  if(mp){
+    const r=mp.returned||{};
+    const comps=mp.components||[];
+    const items=comps.filter(c=>{
+      const name=typeof c==='string'?c:c.name;
+      return mp.leased?.[name]!==false;
+    });
+    if(items.length===0) return '환불대기';
+    const allDone=items.every(c=>{
+      const name=typeof c==='string'?c:c.name;
+      return r[name]?.done||r[name]?.deducted;
+    });
+    return allDone?'환불대기':'미반납';
+  }
+  return null;
+}
 function dlRefund(){
+  const R=STATE.refund;
+  // 화면과 동일한 필터링
   const list=Object.values(DATA.students).filter(st=>st.status==='퇴원'||st.status==='환불대기'||st.status==='재원(환불완료)'||st.status==='환불완료');
-  const rows=[['상태','학생','퇴원일','퇴원담당','패드','완료일']];
-  list.forEach(st=>{const p=st.pads[0]||{};rows.push([st.status,st.name,st.tuebanDate||'',st.tuebanBy||'',p.num||'',st.completeDate||''])});
+  let ann=list.map(st=>({st,rs:getRefundStatus(st)})).filter(x=>x.rs!==null);
+  if(R.q){const q=R.q.toLowerCase();ann=ann.filter(x=>x.st.name.toLowerCase().includes(q))}
+  if(R.cls){ann=ann.filter(x=>(x.st.class||'정규')===R.cls)}
+  if(R.status) ann=ann.filter(x=>x.rs===R.status);
+  if(R.from||R.to) ann=ann.filter(x=>dateInRange(x.st.tuebanDate,R.from,R.to));
+  // 전체 보기 시 환불완료는 오늘만 (화면과 동일)
+  if(R.status==='' || !R.status){
+    if(!R.q && !R.from && !R.to && !R.cls){
+      const today = todayStr();
+      ann=ann.filter(x=>x.rs!=='환불완료' || (x.st.refundCompletedDate && x.st.refundCompletedDate===today));
+    }
+  }
+  const rows=[['상태','학생','반','퇴원일','퇴원담당','패드','완료일','환불완료일']];
+  ann.forEach(x=>{
+    const st=x.st;
+    const p=(st.pads||[])[0]||{};
+    rows.push([x.rs, st.name, st.class||'정규', st.tuebanDate||'', st.tuebanBy||'', p.num||'', st.completeDate||'', st.refundCompletedDate||'']);
+  });
   downloadCSV('환불현황_'+todayStr()+'.csv',rows);
 }
 
@@ -5336,8 +5436,15 @@ function renderSetLog(){
     ${list.length>50?`<div class="load-more-wrap">총 ${list.length}건 중 50건 표시</div>`:''}`;
 }
 function dlLog(){
+  const L=STATE.settings;
+  let history = DATA.history.slice();
+  // 화면과 동일 필터
+  if(L.logQ){const q=L.logQ.toLowerCase();history=history.filter(h=>h.detail?.toLowerCase().includes(q)||h.action?.toLowerCase().includes(q)||h.studentId?.toLowerCase().includes(q)||h.padNum?.toLowerCase().includes(q))}
+  if(L.logType) history=history.filter(h=>h.type===L.logType);
+  if(L.logBy){const q=L.logBy.toLowerCase();history=history.filter(h=>h.user?.toLowerCase().includes(q))}
+  if(L.logFrom||L.logTo) history=history.filter(h=>dateInRange((h.date||'').slice(0,10),L.logFrom,L.logTo));
   const rows=[['시각','유형','작업','상세','담당','학생','패드']];
-  DATA.history.forEach(h=>rows.push([h.date,h.type,h.action,h.detail,h.user,h.studentId||'',h.padNum||'']));
+  history.forEach(h=>rows.push([h.date,h.type,h.action,h.detail,h.user,h.studentId||'',h.padNum||'']));
   downloadCSV('활동로그_'+todayStr()+'.csv',rows);
 }
 
