@@ -537,27 +537,35 @@ function fbSaveAll(){
 /* 실시간 변경 감지 - 다른 PC/탭에서 변경된 데이터를 자동 반영 */
 window.__fbRealtimeOn = false;
 window.__fbPendingApply = null;  // 모달/IME 등으로 미뤄둔 데이터
+let __fbFirstSnapshotSkipped = false;  // 등록 직후 첫 콜백 무시 (옛 데이터로 덮어쓰기 방지)
 function fbStartRealtimeSync(){
   if(!window.__firebaseDb || window.__fbRealtimeOn) return;
   window.__fbRealtimeOn = true;
   window.__firebaseDb.ref('/').on('value', snap=>{
+    // 등록 직후 즉시 받는 첫 콜백은 무시 (fbLoadAll에서 이미 받음 + 자기 변경 덮어쓰기 방지)
+    if(!__fbFirstSnapshotSkipped){
+      __fbFirstSnapshotSkipped = true;
+      console.log('[fbSync] 첫 스냅샷 무시 (안전)');
+      return;
+    }
     const val = snap.val();
     if(!val) return;
     // 자기가 방금 저장한 echo 무시 (저장 진행 중)
-    if(window.__fbSaveInFlight > 0) return;
-    // 자기 저장 직후 2초 윈도우 내 echo도 무시
-    if(Date.now() - __fbLastLocalSave < 2000) return;
-    // IME 조합 중이면 미뤄두기 (한글 입력 깨짐 방지)
+    if(window.__fbSaveInFlight > 0){ console.log('[fbSync] 저장 중 → 무시'); return; }
+    // 자기 저장 직후 5초 윈도우 내 echo도 무시
+    if(Date.now() - __fbLastLocalSave < 5000){ console.log('[fbSync] 5초 윈도우 → 무시'); return; }
+    // IME 조합 중이면 미뤄두기
     if(window.__imeComposing){ window.__fbPendingApply = val; return; }
     // 모달 열려있으면 미뤄두기
     const modalBg = document.getElementById('modalBg');
     if(modalBg && modalBg.classList.contains('active')){ window.__fbPendingApply = val; return; }
-    // 입력 폼에 포커스 있으면 미뤄두기 (작성 중 데이터 꼬임 방지)
+    // 입력 폼에 포커스 있으면 미뤄두기
     const ae = document.activeElement;
     if(ae && (ae.tagName==='INPUT' || ae.tagName==='TEXTAREA' || ae.tagName==='SELECT')){
       window.__fbPendingApply = val;
       return;
     }
+    console.log('[fbSync] 원격 변경 적용');
     fbApplyRemoteData(val);
   });
 }
