@@ -2074,8 +2074,14 @@ function renderAssignSingle(type){
       <div class="box-title" style="margin:0">최근 ${type==='신규'?'배부':'대여'} (${Math.min(recent.length,STATE[stateKey].recentLimit||5)}건)</div>
       ${recent.length>5?`<button class="btn btn-sm" onclick="STATE.${stateKey}.recentLimit=(STATE.${stateKey}.recentLimit||5)+20;showPage('${stateKey}')">더 보기 (+20)</button>`:''}
     </div>
-    <table class="tbl"><thead><tr><th>일자</th><th>학생</th><th>패드</th><th>펜스</th><th>담당</th><th>방법</th></tr></thead><tbody>
-      ${recent.length?recent.slice(0,STATE[stateKey].recentLimit||5).map(h=>`<tr><td>${h.assignedDate}</td><td><span class="clickable" onclick="openStudentModal('${h.studentId}')">${h.studentId}</span></td><td><b>${h.padNum}</b></td><td>${h.fenceNum}</td><td>${h.assignedBy}</td><td><span class="badge badge-gray">${h.method||''}</span></td></tr>`).join(''):'<tr><td colspan="6" class="tbl-empty">없음</td></tr>'}
+    <table class="tbl"><thead><tr><th>일자</th><th>학생</th><th>패드</th><th>펜스</th><th>담당</th><th>방법</th><th style="width:80px">실수 취소</th></tr></thead><tbody>
+      ${recent.length?recent.slice(0,STATE[stateKey].recentLimit||5).map(h=>{
+        const canCancel = canCancelAssign(h);
+        const cancelCell = canCancel
+          ? `<button class="btn btn-sm" style="padding:3px 8px;font-size:11px;background:#fee2e2;color:#991b1b;border:1px solid #fca5a5" onclick="askCancelAssign('${h.id}')">× 취소</button>`
+          : `<span style="font-size:11px;color:var(--text-light)">—</span>`;
+        return `<tr><td>${h.assignedDate}</td><td><span class="clickable" onclick="openStudentModal('${h.studentId}')">${h.studentId}</span></td><td><b>${h.padNum}</b></td><td>${h.fenceNum}</td><td>${h.assignedBy}</td><td><span class="badge badge-gray">${h.method||''}</span></td><td>${cancelCell}</td></tr>`;
+      }).join(''):'<tr><td colspan="7" class="tbl-empty">없음</td></tr>'}
     </tbody></table>
   </div>`;
 }
