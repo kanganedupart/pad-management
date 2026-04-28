@@ -2453,11 +2453,102 @@ function renderAssignHistory(type){
       <div class="filter-field"><label>&nbsp;</label><button class="btn btn-sm" onclick="STATE.${stateKey}.histQ='';STATE.${stateKey}.histCls='';STATE.${stateKey}.histFrom='';STATE.${stateKey}.histTo='';showPage('${stateKey}')">초기화</button></div>
       <div class="filter-field"><label>&nbsp;</label><button class="btn btn-excel btn-sm" onclick="dlAssignHist('${type}')">엑셀</button></div>
     </div>
-    <table class="tbl"><thead><tr><th>배부일</th><th>학생</th><th>패드</th><th>펜스</th><th>방법</th><th>담당</th><th>메모</th></tr></thead><tbody>
-      ${show.length?show.map(h=>`<tr><td>${h.assignedDate}</td><td><span class="clickable" onclick="openStudentModal('${h.studentId}')">${h.studentId}</span>${classBadge(DATA.students[h.studentId])}</td><td><b>${h.padNum}</b></td><td>${h.fenceNum}</td><td><span class="badge badge-gray">${h.method||''}</span></td><td>${h.assignedBy}</td><td style="font-size:11px;color:var(--text-muted)">${h.memo||''}</td></tr>`).join(''):'<tr><td colspan="7" class="tbl-empty">이력 없음</td></tr>'}
+    <table class="tbl"><thead><tr><th>배부일</th><th>학생</th><th>패드</th><th>펜스</th><th>방법</th><th>담당</th><th>메모</th><th style="width:80px">실수 취소</th></tr></thead><tbody>
+      ${show.length?show.map(h=>{
+        const canCancel = canCancelAssign(h);
+        const cancelCell = canCancel
+          ? `<button class="btn btn-sm" style="padding:3px 8px;font-size:11px;background:#fee2e2;color:#991b1b;border:1px solid #fca5a5" onclick="askCancelAssign('${h.id}')">× 취소</button>`
+          : `<span style="font-size:11px;color:var(--text-light)">—</span>`;
+        return `<tr><td>${h.assignedDate}</td><td><span class="clickable" onclick="openStudentModal('${h.studentId}')">${h.studentId}</span>${classBadge(DATA.students[h.studentId])}</td><td><b>${h.padNum}</b></td><td>${h.fenceNum}</td><td><span class="badge badge-gray">${h.method||''}</span></td><td>${h.assignedBy}</td><td style="font-size:11px;color:var(--text-muted)">${h.memo||''}</td><td>${cancelCell}</td></tr>`;
+      }).join(''):'<tr><td colspan="8" class="tbl-empty">이력 없음</td></tr>'}
     </tbody></table>
     ${list.length>ST.limit?`<div class="load-more-wrap">총 ${list.length}건 중 ${show.length}건<br><button class="btn" onclick="STATE.${stateKey}.limit+=20;showPage('${stateKey}')">더 보기</button></div>`:''}`;
 }
+
+/* 배부 취소 가능 여부 판정 (취소 버튼 표시 조건) */
+function canCancelAssign(h){
+  if(!h) return false;
+  if(currentRole==='스타터') return false;  // 스타터(데스크) 제외
+  const st = DATA.students[h.studentId];
+  if(!st) return false;
+  if(st.status !== '재원') return false;  // 재원 상태 학생만
+  const p = DATA.pads[h.padNum];
+  if(!p) return false;
+  if(p.studentId !== h.studentId) return false;  // 다른 학생에게 가있으면 X
+  if(p.type !== h.type) return false;  // 종류 변경됐으면 X (전환 등)
+  if(p.broken) return false;  // 파손이면 X
+  if(!(st.pads||[]).some(pp=>pp.num===h.padNum && !pp.archived)) return false;
+  return true;
+}
+
+/* 배부 취소 - 안전 확인 모달 */
+function askCancelAssign(historyId){
+  if(currentRole==='스타터'){toast('취소 권한 없음','error');return}
+  const h = DATA.assignHistory.find(x=>x.id===historyId);
+  if(!h){toast('이력 정보 없음','error');return}
+  if(!canCancelAssign(h)){toast('이 배부는 취소할 수 없음 (학생 상태/패드 상태 확인)','error');return}
+  const st = DATA.students[h.studentId];
+  const willDeleteStudent = (st.pads||[]).filter(pp=>!pp.archived).length===1;
+  ask(
+    '⚠ 배부 취소 (실수 정정용)',
+    `<div style="line-height:1.7">
+      <b style="font-size:15px">${st.name}</b> (${st.class||'정규'})<br>
+      ${h.type} 패드 <b>${h.padNum}</b> · 펜스 ${h.fenceNum||'—'}<br>
+      배부일 ${h.assignedDate} (${h.assignedBy||''})${h.memo?'<br>메모: '+h.memo:''}
+    </div>
+    <div style="margin-top:12px;padding:10px;background:#fee2e2;border-radius:8px;font-size:13px;color:#991b1b">
+      <b>⚠ 취소하면 다음이 일어납니다:</b><br>
+      • 학생 정보에서 이 패드 제거<br>
+      • 패드 → 창고 복귀<br>
+      ${h.fenceNum?'• 펜스 → 여유 풀로 복귀<br>':''}
+      ${willDeleteStudent?'• <b>학생 카드도 삭제됨 (다른 패드 없음)</b><br>':''}
+      • 활동 로그에 ${currentUser} 취소자로 기록
+    </div>`,
+    '취소 확정',
+    'danger',
+    ()=>doCancelAssign(historyId)
+  );
+}
+
+function doCancelAssign(historyId){
+  const h = DATA.assignHistory.find(x=>x.id===historyId);
+  if(!h){toast('이력 정보 없음','error');return}
+  if(!canCancelAssign(h)){toast('취소 불가 상태로 변경됨','error');closeModal();return}
+  const sid = h.studentId;
+  const padNum = h.padNum;
+  const fenceNum = h.fenceNum;
+  const type = h.type;
+  const st = DATA.students[sid];
+  const p = DATA.pads[padNum];
+  // 학생에서 해당 패드 제거
+  const padIdx = (st.pads||[]).findIndex(pp=>pp.num===padNum && !pp.archived);
+  if(padIdx>=0) st.pads.splice(padIdx,1);
+  const studentDeleted = (st.pads||[]).filter(pp=>!pp.archived).length===0;
+  if(studentDeleted) delete DATA.students[sid];
+  // 패드 창고 복귀
+  p.status = '창고';
+  delete p.studentId;
+  delete p.assignedDate;
+  delete p.assignedBy;
+  // 펜스 여유 복귀 (해당 펜스가 이 패드/학생에 묶여 있을 때만)
+  if(fenceNum && DATA.fences[fenceNum]){
+    const f = DATA.fences[fenceNum];
+    if(f.padNum===padNum || f.studentId===sid){
+      f.status='여유';
+      delete f.studentId;
+    }
+  }
+  // 배부 이력에서 제거
+  const histIdx = DATA.assignHistory.findIndex(x=>x.id===historyId);
+  if(histIdx>=0) DATA.assignHistory.splice(histIdx,1);
+  // 활동 로그 추가
+  addHistory(type, '배부취소', `${sid} (${(st&&st.class)||'정규'}) · ${padNum} 배부 취소${studentDeleted?' · 학생 카드 삭제':''}`, studentDeleted?null:sid, padNum);
+  if(typeof fbSaveNow==='function') fbSaveNow();
+  closeModal();
+  toast(`${sid}의 ${padNum} 배부 취소 완료${studentDeleted?' (학생 카드 삭제)':''}`,'success');
+  showPage(currentPage);
+}
+
 function dlSearchExcel(){
   // 현재 검색 결과 엑셀로
   const q=(STATE.search.q||'').trim();
