@@ -278,6 +278,7 @@ body{background:var(--bg);color:var(--text);font-size:15px;min-height:100vh;line
       <div class="header-nav" id="headerNav"></div>
     </div>
     <div class="header-right">
+      <span id="saveStatus" style="padding:5px 10px;background:#f3f4f6;color:#6b7280;border-radius:6px;font-size:12px;font-weight:600">대기</span>
       <span class="header-date" id="headerDate"></span>
       <span class="header-user" id="userBadge">-</span>
       <span class="header-role" id="roleBadge">-</span>
@@ -415,10 +416,42 @@ function fbLoadAll(cb){
   });
 }
 
+/* 저장 상태 표시 (화면 우측 상단) */
+function setSaveStatus(state, msg){
+  const el = document.getElementById('saveStatus');
+  if(!el) return;
+  if(state==='saving'){
+    el.style.background='#fef3c7'; el.style.color='#92400e';
+    el.textContent='⏳ 저장 중...';
+  } else if(state==='ok'){
+    const t = new Date();
+    const hh = String(t.getHours()).padStart(2,'0');
+    const mm = String(t.getMinutes()).padStart(2,'0');
+    const ss = String(t.getSeconds()).padStart(2,'0');
+    el.style.background='#d1fae5'; el.style.color='#065f46';
+    el.textContent='✅ 저장됨 '+hh+':'+mm+':'+ss;
+  } else if(state==='err'){
+    el.style.background='#fee2e2'; el.style.color='#991b1b';
+    el.textContent='❌ 저장 실패! '+(msg||'');
+  } else if(state==='idle'){
+    el.style.background='#f3f4f6'; el.style.color='#6b7280';
+    el.textContent='대기';
+  }
+}
+
 /* Firebase에 즉시 저장 (디바운스 없음, 확실하게) */
 function fbSaveNow(){
-  if(!window.__firebaseDb || !window.__fbReady) return Promise.resolve();
+  if(!window.__firebaseDb){
+    setSaveStatus('err','Firebase 미연결');
+    return Promise.resolve();
+  }
+  if(!window.__fbReady){
+    // 아직 로드 끝나기 전이면 1초 후 재시도
+    setTimeout(()=>{ if(window.__fbReady) fbSaveNow(); }, 1000);
+    return Promise.resolve();
+  }
   window.__fbSaveInFlight++;
+  setSaveStatus('saving');
   const payload = {
     students: DATA.students || {},
     pads: DATA.pads || {},
@@ -434,10 +467,12 @@ function fbSaveNow(){
   };
   return window.__firebaseDb.ref('/').set(payload).then(()=>{
     window.__fbSaveInFlight--;
+    setSaveStatus('ok');
   }).catch(err=>{
     window.__fbSaveInFlight--;
     console.error('Firebase 저장 실패:', err);
-    if(typeof toast==='function') toast('서버 저장 실패 - 네트워크 확인','error');
+    setSaveStatus('err', err && err.message ? err.message.substring(0,40) : '');
+    if(typeof toast==='function') toast('서버 저장 실패! 화면 우측 상단 빨간 표시 확인 → 네트워크 점검 후 다시 시도','error');
   });
 }
 
@@ -451,40 +486,12 @@ function fbSaveAll(){
   }, 500);
 }
 
-/* 실시간 변경 감지 - 다른 기기/탭에서 수정하면 반영
-   주의: 내가 저장 중일 때는 내 데이터를 보호하기 위해 스킵 */
+/* 실시간 변경 감지 - 일시 비활성화 (저장 데이터 덮어쓰기 방지)
+   필요 시 다시 활성화 가능. 현재는 안전 우선. */
 function fbStartRealtimeSync(){
-  if(!window.__firebaseDb) return;
-  // 초기 로드 끝난 후부터 리스너 동작
-  window.__firebaseDb.ref('/').on('value', snap=>{
-    // 초기 로드 전이면 무시
-    if(!window.__fbReady) return;
-    // 내가 저장 중이면 무시 (내 저장이 끝날 때까지 기다림)
-    if(window.__fbSaveInFlight > 0) return;
-
-    const val = snap.val();
-    if(!val || Object.keys(val).length === 0) return;
-
-    // 변경된 내용만 반영
-    DATA.students = val.students || {};
-    DATA.pads = val.pads || {};
-    DATA.fences = val.fences || {};
-    DATA.history = val.history || [];
-    DATA.freeHistory = val.freeHistory || [];
-    DATA.assignHistory = val.assignHistory || [];
-    DATA.brokenHistory = val.brokenHistory || [];
-    DATA.staff = val.staff || {};
-    if(!DATA.staff.admin){
-      DATA.staff.admin = {id:'admin',name:'어드민',dept:'어드민',role:'어드민',pw:'3500'};
-    }
-
-    // 로그인 상태면 현재 페이지 재렌더
-    if(typeof currentUser!=='undefined' && currentUser){
-      if(typeof refreshCurrentPage==='function'){
-        try{ refreshCurrentPage(); }catch(e){}
-      }
-    }
-  });
+  // 비활성화: 다른 기기/탭과 실시간 동기화는 하지 않음
+  // 새로고침 시 fbLoadAll에서 최신 데이터 로드함
+  return;
 }
 
 // 기종별 전체 구성품 (대여 시작 시 default)
@@ -5663,6 +5670,22 @@ document.addEventListener('compositionend', ()=>{
     const p = window.__pendingPage;
     window.__pendingPage = null;
     showPage(p);
+  }
+});
+
+// 페이지 떠나기 전 저장 중이면 경고
+window.addEventListener('beforeunload', (e)=>{
+  if(window.__fbSaveInFlight > 0){
+    e.preventDefault();
+    e.returnValue = '저장 중입니다. 잠시만 기다려주세요.';
+    return e.returnValue;
+  }
+});
+
+// 페이지 가려질 때 강제 저장
+document.addEventListener('visibilitychange', ()=>{
+  if(document.visibilityState === 'hidden' && window.__fbReady){
+    if(typeof fbSaveNow==='function') fbSaveNow();
   }
 });
 
