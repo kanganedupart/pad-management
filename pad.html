@@ -459,6 +459,20 @@ function _fbBuildPayload(){
   };
 }
 
+/* undefined 자동 제거 — Firebase는 undefined 값 거부 (저장 통째로 실패) */
+function _stripUndefined(obj){
+  if(obj === null || obj === undefined) return obj;
+  if(typeof obj !== 'object') return obj;
+  if(Array.isArray(obj)) return obj.map(_stripUndefined).filter(v=>v!==undefined);
+  const result = {};
+  for(const k in obj){
+    if(Object.prototype.hasOwnProperty.call(obj, k) && obj[k] !== undefined){
+      result[k] = _stripUndefined(obj[k]);
+    }
+  }
+  return result;
+}
+
 function _fbSaveWithRetry(payload, attempt){
   // set 사용 (가장 안정적, 통째 저장이지만 echo 방지로 충돌 차단)
   const savePromise = window.__firebaseDb.ref('/').set(payload);
@@ -494,8 +508,8 @@ function fbSaveNow(){
   window.__fbSaveInFlight++;
   __fbLastLocalSave = Date.now();
   setSaveStatus('saving');
-  const payload = _fbBuildPayload();
-  console.log('[fbSave] 저장 시작 — 학생', Object.keys(payload.students).length, '/ 패드', Object.keys(payload.pads).length);
+  const payload = _stripUndefined(_fbBuildPayload());
+  console.log('[fbSave] 저장 시작 — 학생', Object.keys(payload.students||{}).length, '/ 패드', Object.keys(payload.pads||{}).length);
   return _fbSaveWithRetry(payload, 0).then(()=>{
     __fbSaving = false;
     window.__fbSaveInFlight = Math.max(0, window.__fbSaveInFlight-1);
@@ -2410,7 +2424,8 @@ function as_doSave(type, name, num, cls, isAddition){
     if(anyUn){leaseMemo=(document.getElementById('as_leaseMemo').value||'').trim();if(!leaseMemo){toast('미대여 사유 메모 필수','error');return}}
   }
   const padStatus=type==='신규'?'배부':'대여중';
-  const newPad = {type,num,model:p.model,fenceNum,assignedDate:dateStr,assignedBy:currentUser,components,leased,returned,leaseMemo:leaseMemo||undefined};
+  const newPad = {type,num,model:p.model,fenceNum,assignedDate:dateStr,assignedBy:currentUser,components,leased,returned};
+  if(leaseMemo) newPad.leaseMemo = leaseMemo;
   if(isAddition){
     // 기존 학생에 패드 추가
     DATA.students[name].pads.push(newPad);
