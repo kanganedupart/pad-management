@@ -460,13 +460,14 @@ function _fbBuildPayload(){
 }
 
 function _fbSaveWithRetry(payload, attempt){
-  const savePromise = window.__firebaseDb.ref('/').update(payload);
+  // set 사용 (가장 안정적, 통째 저장이지만 echo 방지로 충돌 차단)
+  const savePromise = window.__firebaseDb.ref('/').set(payload);
   const timeoutPromise = new Promise((_, reject) =>
     setTimeout(() => reject(new Error('15초 타임아웃')), 15000)
   );
   return Promise.race([savePromise, timeoutPromise]).catch(err=>{
     if(attempt < 1){
-      console.warn('저장 실패 → 재시도:', err.message);
+      console.warn('[fbSave] 실패 → 1초 후 재시도:', err.message);
       return new Promise(r=>setTimeout(r, 1000)).then(()=>_fbSaveWithRetry(payload, attempt+1));
     }
     throw err;
@@ -475,14 +476,15 @@ function _fbSaveWithRetry(payload, attempt){
 
 function fbSaveNow(){
   if(!window.__firebaseDb){
+    console.error('[fbSave] Firebase 미연결');
     setSaveStatus('err','Firebase 미연결');
     return Promise.resolve();
   }
   if(!window.__fbReady){
+    console.warn('[fbSave] 아직 준비 안 됨, 1초 후 재시도');
     setTimeout(()=>{ if(window.__fbReady) fbSaveNow(); }, 1000);
     return Promise.resolve();
   }
-  // 이미 저장 중이면 끝난 후 한 번 더 저장 (마지막 상태 반드시 반영)
   if(__fbSaving){
     __fbDirty = true;
     return Promise.resolve();
@@ -493,13 +495,14 @@ function fbSaveNow(){
   __fbLastLocalSave = Date.now();
   setSaveStatus('saving');
   const payload = _fbBuildPayload();
+  console.log('[fbSave] 저장 시작 — 학생', Object.keys(payload.students).length, '/ 패드', Object.keys(payload.pads).length);
   return _fbSaveWithRetry(payload, 0).then(()=>{
     __fbSaving = false;
     window.__fbSaveInFlight = Math.max(0, window.__fbSaveInFlight-1);
     __fbLastLocalSave = Date.now();
     __fbPendingSnapshot = null;
     setSaveStatus('ok');
-    // 저장 중에 변경된 게 있으면 즉시 한 번 더
+    console.log('[fbSave] ✅ 저장 성공');
     if(__fbDirty){
       __fbDirty = false;
       setTimeout(fbSaveNow, 50);
@@ -507,15 +510,14 @@ function fbSaveNow(){
   }).catch(err=>{
     __fbSaving = false;
     window.__fbSaveInFlight = Math.max(0, window.__fbSaveInFlight-1);
-    console.error('Firebase 저장 최종 실패:', err);
+    console.error('[fbSave] ❌ 최종 실패:', err);
     __fbPendingSnapshot = payload;
     const msg = err && err.message ? err.message.substring(0,40) : '';
     setSaveStatus('err', msg);
     if(typeof toast==='function') toast('서버 저장 실패: '+msg+' · 30초 후 자동 재시도','error');
-    // 30초 후 자동 재시도 (네트워크 복구 시 자동 전송)
     setTimeout(()=>{
       if(__fbPendingSnapshot && window.__fbReady){
-        console.log('펜딩 데이터 재전송 시도');
+        console.log('[fbSave] 펜딩 데이터 재전송');
         fbSaveNow();
       }
     }, 30000);
@@ -543,13 +545,19 @@ function fbStartRealtimeSync(){
     if(!val) return;
     // 자기가 방금 저장한 echo 무시 (저장 진행 중)
     if(window.__fbSaveInFlight > 0) return;
-    // 자기 저장 직후 2초 윈도우 내 echo도 무시 (set 완료 후 들어오는 echo 차단)
+    // 자기 저장 직후 2초 윈도우 내 echo도 무시
     if(Date.now() - __fbLastLocalSave < 2000) return;
     // IME 조합 중이면 미뤄두기 (한글 입력 깨짐 방지)
     if(window.__imeComposing){ window.__fbPendingApply = val; return; }
-    // 모달 열려있으면 미뤄두기 (작업 중 화면 갱신 방지)
+    // 모달 열려있으면 미뤄두기
     const modalBg = document.getElementById('modalBg');
     if(modalBg && modalBg.classList.contains('active')){ window.__fbPendingApply = val; return; }
+    // 입력 폼에 포커스 있으면 미뤄두기 (작성 중 데이터 꼬임 방지)
+    const ae = document.activeElement;
+    if(ae && (ae.tagName==='INPUT' || ae.tagName==='TEXTAREA' || ae.tagName==='SELECT')){
+      window.__fbPendingApply = val;
+      return;
+    }
     fbApplyRemoteData(val);
   });
 }
@@ -5881,6 +5889,21 @@ window.addEventListener('beforeunload', (e)=>{
 
 // 페이지 가려질 때 자동 저장 제거 — 옛 DATA로 통째 덮어쓰는 부작용 차단
 // (모든 변경은 그 시점에 이미 fbSaveNow로 저장되므로 추가 저장 불필요)
+
+// 입력 폼에서 포커스 떠나면 미뤄둔 원격 데이터 적용
+document.addEventListener('focusout', ()=>{
+  setTimeout(()=>{
+    if(!window.__fbPendingApply) return;
+    const ae = document.activeElement;
+    if(ae && (ae.tagName==='INPUT' || ae.tagName==='TEXTAREA' || ae.tagName==='SELECT')) return;
+    if(window.__imeComposing) return;
+    const modalBg = document.getElementById('modalBg');
+    if(modalBg && modalBg.classList.contains('active')) return;
+    const v = window.__fbPendingApply;
+    window.__fbPendingApply = null;
+    if(typeof fbApplyRemoteData==='function') fbApplyRemoteData(v);
+  }, 200);
+});
 
 </script>
 </body>
