@@ -646,7 +646,11 @@ function calc(){
       // 환불대기 = 이미 창고에 물리적으로 있는 상태 → 재고로 집계
       if(p.status==='창고'||p.status==='환불대기') s.monthlyStorage++;
       if(p.status==='퇴원미반납') s.monthlyUnreturned++;
-      if(p.status==='환불대기') s.refundWaiting++;
+      // 환불 끝난 학생 패드는 카운트 제외
+      if(p.status==='환불대기'){
+        const owner = p.studentId ? DATA.students[p.studentId] : null;
+        if(!(owner && owner.refundCompletedDate)) s.refundWaiting++;
+      }
     }
   });
 
@@ -656,8 +660,9 @@ function calc(){
       const mp=st.pads.find(p=>p.type==='월납');
       if(mp) s.tuebanUnreturned++;
     }
-    if(st.status==='환불대기') s.refundWaiting++;
-    if(st.status==='재원(환불완료)') s.refundCompleted++;
+    // 환불 끝난 학생은 환불대기에서 제외
+    if(st.status==='환불대기' && !st.refundCompletedDate) s.refundWaiting++;
+    if(st.status==='재원(환불완료)' || st.refundCompletedDate) s.refundCompleted++;
   });
   Object.values(DATA.fences).forEach(f=>{
     if(f.status==='삭제대기') s.fenceWaiting++;
