@@ -402,6 +402,8 @@ function fbLoadAll(cb){
       if(!DATA.staff.admin){
         DATA.staff.admin = {id:'admin',name:'어드민',dept:'어드민',role:'어드민',pw:'3500'};
       }
+      // 데이터 정합성 자동 정리 (환불완료된 학생/패드 status 정정)
+      if(typeof _fixDataConsistency === 'function') _fixDataConsistency();
     } else {
       // 최초 실행 - 빈 상태로 초기화 후 Firebase에 올림
       initData();
@@ -604,9 +606,50 @@ function fbApplyRemoteData(val){
   if(!DATA.staff.admin){
     DATA.staff.admin = {id:'admin',name:'어드민',dept:'어드민',role:'어드민',pw:'3500'};
   }
+  // 데이터 정합성 자동 정리 (환불완료된 학생/패드 status 정정)
+  _fixDataConsistency();
   // 로그인 + 페이지 표시 중일 때만 재렌더
   if(currentUser && currentPage){
     try { showPage(currentPage); } catch(e){ console.warn('재렌더 실패', e); }
+  }
+}
+
+/* 데이터 정합성 자동 정리
+   - 환불완료(refundCompletedDate)된 학생: status를 '재원(환불완료)'로 통일
+   - 환불완료된 학생의 월납 패드: 창고로 정리 + archived 처리
+   - 변경 발생 시 Firebase에 자동 저장 */
+function _fixDataConsistency(){
+  let changed = false;
+  Object.values(DATA.students || {}).forEach(st=>{
+    if(st && st.refundCompletedDate){
+      // 학생 status 정정
+      if(st.status==='환불대기' || st.status==='퇴원'){
+        st.status = '재원(환불완료)';
+        changed = true;
+      }
+      // 이 학생의 월납 패드들 정리
+      (st.pads||[]).forEach(p=>{
+        if(p && p.type==='월납' && !p.archived){
+          p.archived = true;
+          p.archivedStage = '환불완료';
+          changed = true;
+          // 글로벌 패드 풀에서도 환불대기/대여중이면 창고로
+          const gp = DATA.pads ? DATA.pads[p.num] : null;
+          if(gp && (gp.status==='환불대기' || gp.status==='대여중') && gp.studentId===st.name){
+            gp.status = '창고';
+            delete gp.studentId;
+            delete gp.fenceNum;
+            changed = true;
+          }
+        }
+      });
+    }
+  });
+  if(changed){
+    console.log('[정합성] 환불완료 데이터 자동 정리 완료 → Firebase 저장');
+    if(typeof fbSaveNow === 'function' && window.__fbReady) {
+      setTimeout(fbSaveNow, 100);
+    }
   }
 }
 
