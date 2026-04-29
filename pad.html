@@ -2095,7 +2095,12 @@ function renderAssignCombined(type){
 /* 월납 배부 - 퇴원 처리 탭 */
 function renderTuebanTab(){
   const M=STATE.monthlyAssign;
-  const inProgress=Object.values(DATA.students).filter(st=>(st.status==='퇴원'||st.status==='환불대기')&&st.pads.some(p=>p.type==='월납'));
+  // 환불완료된 학생은 명시적으로 제외 (정합성 보호)
+  const inProgress=Object.values(DATA.students).filter(st=>{
+    if(st.refundCompletedDate) return false;
+    if(st.status!=='퇴원' && st.status!=='환불대기') return false;
+    return st.pads.some(p=>p.type==='월납' && !p.archived);
+  });
   let list=inProgress;
   if(M.tuebanQ){const q=M.tuebanQ.toLowerCase();list=list.filter(st=>st.name.toLowerCase().includes(q))}
   if(M.tuebanCls){list=list.filter(st=>(st.class||'정규')===M.tuebanCls)}
