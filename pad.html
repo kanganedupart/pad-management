@@ -646,15 +646,11 @@ function calc(){
       // 환불대기 = 이미 창고에 물리적으로 있는 상태 → 재고로 집계
       if(p.status==='창고'||p.status==='환불대기') s.monthlyStorage++;
       if(p.status==='퇴원미반납') s.monthlyUnreturned++;
-      // 환불 끝난 학생 패드는 카운트 제외
-      if(p.status==='환불대기'){
-        const owner = p.studentId ? DATA.students[p.studentId] : null;
-        if(!(owner && owner.refundCompletedDate)) s.refundWaiting++;
-      }
+      // 환불대기 카운트는 학생 기준으로만 (아래에서 처리, 중복 카운트 방지)
     }
   });
 
-  // 학생 기준 "퇴원 미반납" = 월납 회수 미완료만 (신규 퇴원은 펜스 관점이라 별도)
+  // 학생 기준 환불대기/퇴원미반납 — 환불 페이지와 동일한 기준
   Object.values(DATA.students).forEach(st=>{
     if(st.status==='퇴원'){
       const mp=st.pads.find(p=>p.type==='월납');
@@ -1195,7 +1191,8 @@ function renderSearchResult(){
         // 재원만 (퇴원/환불대기/완료 모두 제외)
         if(st.status!=='재원') return false;
       } else if(sf==='대기'){
-        // 대기 = 퇴원 미반납 + 환불대기
+        // 대기 = 퇴원 미반납 + 환불대기 (환불 끝난 학생은 제외)
+        if(st.refundCompletedDate) return false;
         const isUnreturned = st.status==='퇴원' && (st.pads||[]).find(p=>p.type==='월납'&&!p.archived);
         const isRefundWait = st.status==='환불대기';
         if(!isUnreturned && !isRefundWait) return false;
@@ -1313,6 +1310,12 @@ function renderSearchResult(){
 /* 학생의 화면 표시용 상태 (퇴원 세분화) */
 function getStudentDisplayStatus(st){
   if(st.status==='재원') return {cls:'badge-green', label:'재원', key:'재원'};
+  // 환불 완료되었으면 status가 환불대기여도 환불완료로 표시 (데이터 정합성 보호)
+  if(st.refundCompletedDate){
+    const hadMonthly = (st.pads||[]).some(p=>p.type==='월납');
+    if(hadMonthly) return {cls:'badge-gray', label:'퇴원완료(환불완료)', key:'퇴원완료'};
+    return {cls:'badge-gray', label:'퇴원 완료', key:'퇴원완료'};
+  }
   if(st.status==='환불대기') return {cls:'badge-yellow', label:'환불 대기', key:'환불대기'};
   if(st.status==='퇴원'){
     // 환불 완료되었으면 → 환불 거친 학생인지 확인 (월납)
