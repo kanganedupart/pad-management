@@ -616,37 +616,32 @@ function fbApplyRemoteData(val){
 
 /* 데이터 정합성 자동 정리
    - 환불완료(refundCompletedDate)된 학생: status를 '재원(환불완료)'로 통일
-   - 환불완료된 학생의 월납 패드: 창고로 정리 + archived 처리
+   - 학생 객체 안의 월납 패드: archived 처리 (이력만)
+   - 글로벌 패드 풀의 status는 절대 건드리지 않음 (환불대기 그대로 두기 = 정책)
    - 변경 발생 시 Firebase에 자동 저장 */
 function _fixDataConsistency(){
   let changed = false;
   Object.values(DATA.students || {}).forEach(st=>{
-    if(st && st.refundCompletedDate){
-      // 학생 status 정정
-      if(st.status==='환불대기' || st.status==='퇴원'){
-        st.status = '재원(환불완료)';
+    if(!st || !st.refundCompletedDate) return;
+    // 학생 status 정정
+    if(st.status==='환불대기' || st.status==='퇴원'){
+      st.status = '재원(환불완료)';
+      changed = true;
+    }
+    // 학생 객체 안의 월납 패드는 archived만 표시 (이력 보존, 본인 카드에만 표시 안 됨)
+    (st.pads||[]).forEach(p=>{
+      if(p && p.type==='월납' && !p.archived){
+        p.archived = true;
+        p.archivedStage = '환불완료';
         changed = true;
       }
-      // 이 학생의 월납 패드들 정리
-      (st.pads||[]).forEach(p=>{
-        if(p && p.type==='월납' && !p.archived){
-          p.archived = true;
-          p.archivedStage = '환불완료';
-          changed = true;
-          // 글로벌 패드 풀에서도 환불대기/대여중이면 창고로
-          const gp = DATA.pads ? DATA.pads[p.num] : null;
-          if(gp && (gp.status==='환불대기' || gp.status==='대여중') && gp.studentId===st.name){
-            gp.status = '창고';
-            delete gp.studentId;
-            delete gp.fenceNum;
-            changed = true;
-          }
-        }
-      });
-    }
+    });
+    // 글로벌 패드 풀 (DATA.pads)는 건드리지 않음.
+    // 환불대기 → 창고 이동은 환불 처리 시점에서 이미 처리되거나
+    // 환불대기 상태 그대로도 배부 가능한 정책이므로 자동 변경하지 않음.
   });
   if(changed){
-    console.log('[정합성] 환불완료 데이터 자동 정리 완료 → Firebase 저장');
+    console.log('[정합성] 환불완료 학생 status 정리 → Firebase 저장');
     if(typeof fbSaveNow === 'function' && window.__fbReady) {
       setTimeout(fbSaveNow, 100);
     }
@@ -2174,8 +2169,8 @@ function renderAssignSingle(type){
   const stateKey=isNew?'newAssign':'monthlyAssign';
   const freeFences=Object.values(DATA.fences).filter(f=>f.status==='미지정'&&f.type===type);
   const recent=DATA.assignHistory.filter(h=>h.type===type);
-  // 배부 가능 = 창고 상태 + 학생 없음 + 펜스 매칭된 것만
-  const stock=Object.values(DATA.pads).filter(p=>p.type===type&&p.status==='창고'&&!p.studentId&&p.fenceNum);
+  // 배부 가능 = 창고 상태 + 학생 없음 + 펜스 매칭된 것만 (월납은 환불대기도 포함)
+  const stock=Object.values(DATA.pads).filter(p=>p.type===type && (p.status==='창고' || (type==='월납' && p.status==='환불대기')) && !p.studentId && p.fenceNum);
   return `
   <div class="box">
     <div class="box-title">건바이건 ${type==='신규'?'배부':'대여'}</div>
@@ -2333,9 +2328,12 @@ function as_onPadInput(type){
     }
     return;
   }
-  if(p.status!=='창고'){h.textContent=`배부 불가 (${p.status})`;h.className='form-hint err';return}
+  // 월납은 환불대기도 배부 가능 (창고 수량에 잡힘)
+  const isAllowedStatus = p.status==='창고' || (type==='월납' && p.status==='환불대기');
+  if(!isAllowedStatus){h.textContent=`배부 불가 (${p.status})`;h.className='form-hint err';return}
   if(!p.fenceNum){h.textContent='펜스 없음 — 펜스 관리에서 매칭 먼저';h.className='form-hint err';return}
-  h.textContent=`✓ 배부 가능 — ${p.model} · 펜스 ${p.fenceNum}`;h.className='form-hint ok';
+  const refundTag = (p.status==='환불대기') ? ' · ⚠ 환불대기' : '';
+  h.textContent=`✓ 배부 가능 — ${p.model} · 펜스 ${p.fenceNum}${refundTag}`;h.className='form-hint ok';
   if(type==='월납'){
     const comps=(MODELS[p.model]||['본체','충전기']).slice();
     document.getElementById('as_comps_wrap').innerHTML=`
