@@ -614,38 +614,11 @@ function fbApplyRemoteData(val){
   }
 }
 
-/* 데이터 정합성 자동 정리
-   - 환불완료(refundCompletedDate)된 학생: status를 '재원(환불완료)'로 통일
-   - 학생 객체 안의 월납 패드: archived 처리 (이력만)
-   - 글로벌 패드 풀의 status는 절대 건드리지 않음 (환불대기 그대로 두기 = 정책)
-   - 변경 발생 시 Firebase에 자동 저장 */
+/* 데이터 정합성 자동 정리 — 비활성화
+   복잡한 추가대여 케이스에서 부작용이 발생해 임시 OFF.
+   환불완료 학생 데이터는 환불 처리 시점에 정확히 처리하는 것이 정공법. */
 function _fixDataConsistency(){
-  let changed = false;
-  Object.values(DATA.students || {}).forEach(st=>{
-    if(!st || !st.refundCompletedDate) return;
-    // 학생 status 정정
-    if(st.status==='환불대기' || st.status==='퇴원'){
-      st.status = '재원(환불완료)';
-      changed = true;
-    }
-    // 학생 객체 안의 월납 패드는 archived만 표시 (이력 보존, 본인 카드에만 표시 안 됨)
-    (st.pads||[]).forEach(p=>{
-      if(p && p.type==='월납' && !p.archived){
-        p.archived = true;
-        p.archivedStage = '환불완료';
-        changed = true;
-      }
-    });
-    // 글로벌 패드 풀 (DATA.pads)는 건드리지 않음.
-    // 환불대기 → 창고 이동은 환불 처리 시점에서 이미 처리되거나
-    // 환불대기 상태 그대로도 배부 가능한 정책이므로 자동 변경하지 않음.
-  });
-  if(changed){
-    console.log('[정합성] 환불완료 학생 status 정리 → Firebase 저장');
-    if(typeof fbSaveNow === 'function' && window.__fbReady) {
-      setTimeout(fbSaveNow, 100);
-    }
-  }
+  return; // no-op
 }
 
 // 기종별 전체 구성품 (대여 시작 시 default)
@@ -1219,9 +1192,14 @@ function renderSearchResult(){
     return '<div class="box" style="text-align:center;color:var(--text-muted);padding:20px">🔍 학생 이름 또는 패드번호를 입력하세요.<br><span style="font-size:12px">예: "테스트1", "001", "b5", "783"</span></div>';
   }
   const ql=q.toLowerCase();
-  // 학생 이름 검색 (부분일치, 한글 포함) + 반 필터 + 상태 필터
+  // 학생 이름 검색 (부분일치) OR 패드번호 검색 (학생이 가진 패드 번호 부분 매칭)
   let students=Object.values(DATA.students).filter(st=>{
-    if(q && !st.name.toLowerCase().includes(ql)) return false;
+    if(q){
+      const nameMatch = st.name.toLowerCase().includes(ql);
+      // 패드번호로도 매칭 (학생이 가진 모든 패드 — archived 포함, 이력 검색 가능)
+      const padMatch = (st.pads||[]).some(p=>p.num && p.num.toLowerCase().includes(ql));
+      if(!nameMatch && !padMatch) return false;
+    }
     if(cls && (st.class||'정규')!==cls) return false;
     if(sf){
       // 새 상태 필터 옵션: 재원 / 대기 / 퇴반
@@ -2184,7 +2162,7 @@ function renderAssignSingle(type){
       <div class="form-row">
         <label>패드 번호<span class="req">*</span></label>
         <input id="as_pad" placeholder="예: ${isNew?'631':'b101'}" list="as_pad_list" oninput="as_onPadInput('${type}')">
-        <datalist id="as_pad_list">${stock.slice(0,50).map(p=>`<option value="${p.num}">`).join('')}</datalist>
+        <datalist id="as_pad_list">${stock.slice(0,500).map(p=>`<option value="${p.num}">`).join('')}</datalist>
         <div class="form-hint" id="as_padHint">바로 배부 가능 ${stock.length}대</div>
       </div>
       <div class="form-row">
@@ -2196,8 +2174,9 @@ function renderAssignSingle(type){
       </div>
       <div class="form-row">
         <label>학생 이름<span class="req">*</span></label>
-        <input id="as_name" placeholder="필수 입력" autocomplete="off">
-        <div class="form-hint">빈칸 시 저장 불가</div>
+        <input id="as_name" placeholder="필수 입력" autocomplete="off" oninput="as_onNameInput('${type}')" list="as_name_list">
+        <datalist id="as_name_list">${Object.values(DATA.students||{}).filter(s=>s&&s.name&&s.status==='재원').slice(0,500).map(s=>`<option value="${s.name}">`).join('')}</datalist>
+        <div class="form-hint" id="as_nameHint">빈칸 시 저장 불가</div>
       </div>
     </div>
     ${isNew?`
@@ -2260,6 +2239,36 @@ function renderAssignSingle(type){
     </tbody></table>
   </div>`;
 }
+/* 학생 이름 입력 시 — 그 학생이 이미 가진 같은 type 패드가 있으면 자동 채움 */
+function as_onNameInput(type){
+  const name = document.getElementById('as_name').value.trim();
+  const padInput = document.getElementById('as_pad');
+  const nh = document.getElementById('as_nameHint');
+  if(!name){
+    if(nh){ nh.textContent='빈칸 시 저장 불가'; nh.className='form-hint'; }
+    return;
+  }
+  // 이름 매칭 학생들 (정확 매칭 우선)
+  const matched = Object.values(DATA.students||{}).filter(s=>s && s.name===name);
+  if(matched.length===0){
+    if(nh){ nh.textContent='새 학생 (등록됨)'; nh.className='form-hint ok'; }
+    return;
+  }
+  if(nh){ nh.textContent=`기존 학생 — ${matched.length}명 매칭`; nh.className='form-hint ok'; }
+  // 패드번호 셀이 비어있을 때만 자동 채움 (사용자 입력 침범 방지)
+  if(padInput && !padInput.value){
+    // 이 학생들 중 type에 해당하는 활성 패드 찾기
+    for(const st of matched){
+      const activePad = (st.pads||[]).find(p=>p && p.type===type && !p.archived);
+      if(activePad && activePad.num){
+        padInput.value = activePad.num;
+        if(typeof as_onPadInput==='function') as_onPadInput(type);
+        return;
+      }
+    }
+  }
+}
+
 function as_onPadInput(type){
   const num=document.getElementById('as_pad').value.trim();
   const h=document.getElementById('as_padHint');
@@ -2268,7 +2277,18 @@ function as_onPadInput(type){
   if(editArea) editArea.innerHTML='';
   if(!num){h.textContent='바로 배부 가능한 패드 입력';h.className='form-hint';return}
   const p=DATA.pads[num];
-  if(!p){h.textContent='존재하지 않는 패드';h.className='form-hint err';return}
+  if(!p){
+    // 부분 매칭 후보 찾기 (예: 917 입력 → (A9) 917, (A7) 917)
+    const candidates = Object.keys(DATA.pads||{}).filter(k=>k.toLowerCase().includes(num.toLowerCase())).slice(0,8);
+    if(candidates.length>0){
+      h.innerHTML='유사 패드: ' + candidates.map(k=>`<span style="cursor:pointer;text-decoration:underline" onclick="document.getElementById('as_pad').value='${k}';as_onPadInput('${type}')">${k}</span>`).join(' · ');
+      h.className='form-hint err';
+    } else {
+      h.textContent='존재하지 않는 패드';
+      h.className='form-hint err';
+    }
+    return;
+  }
   if(p.type!==type){h.textContent=`${type} 아님 (${p.type})`;h.className='form-hint err';return}
 
   // ===== 이미 배부된 패드인 경우: 구성품 수정 모드 =====
@@ -2332,7 +2352,14 @@ function as_onPadInput(type){
   const isAllowedStatus = p.status==='창고' || (type==='월납' && p.status==='환불대기');
   if(!isAllowedStatus){h.textContent=`배부 불가 (${p.status})`;h.className='form-hint err';return}
   if(!p.fenceNum){h.textContent='펜스 없음 — 펜스 관리에서 매칭 먼저';h.className='form-hint err';return}
-  const refundTag = (p.status==='환불대기') ? ' · ⚠ 환불대기' : '';
+  // 환불대기 태그 — 단, 마지막 주인이 환불완료된 학생이면 표시 안 함 (실제로는 정리 끝난 패드)
+  let refundTag = '';
+  if(p.status==='환불대기'){
+    const lastOwner = p.studentId ? DATA.students[p.studentId] : null;
+    if(!(lastOwner && lastOwner.refundCompletedDate)){
+      refundTag = ' · ⚠ 환불대기';
+    }
+  }
   h.textContent=`✓ 배부 가능 — ${p.model} · 펜스 ${p.fenceNum}${refundTag}`;h.className='form-hint ok';
   if(type==='월납'){
     const comps=(MODELS[p.model]||['본체','충전기']).slice();
