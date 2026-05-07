@@ -1053,8 +1053,12 @@ function openRenameStudent(sid){
 }
 
 function doRenameStudent(sid){
-  const st=DATA.students[sid];
+  // id로 못 찾으면 이름으로도 검색 (Firebase key가 다를 수 있음)
+  let st=DATA.students[sid];
+  if(!st) st=Object.values(DATA.students).find(s=>s.id===sid||s.name===sid);
   if(!st){toast('학생 없음','error');return}
+  // 실제 DATA key 찾기
+  const realKey=Object.keys(DATA.students).find(k=>DATA.students[k]===st)||sid;
   const el=document.getElementById('rename_input');
   const newName=(el?el.value:'').trim();
   if(!newName){toast('이름을 입력하세요','error');return}
@@ -1065,7 +1069,7 @@ function doRenameStudent(sid){
   st.name=newName;
   st.id=newName;
   DATA.students[newName]=st;
-  delete DATA.students[oldName];
+  delete DATA.students[realKey];
   // 글로벌 패드 studentId 업데이트
   Object.values(DATA.pads).forEach(p=>{if(p.studentId===oldName)p.studentId=newName;});
   // 펜스 studentId 업데이트
@@ -5251,6 +5255,7 @@ function runDiagnostic(){
     const padList = monthlyNoFence.map(function(p){return p.num+' ('+p.status+')'}).join(', ');
     const btnHtml = monthlyNoFence.map(function(p){
       return '<button class="btn btn-sm btn-primary" style="margin:2px" onclick="fixMonthlyFence(this.dataset.num)" data-num="'+p.num+'">'+p.num+' 펜스 매칭</button>';
+        +p.num+' 펜스 매칭</button>';
     }).join('');
     lines.push('<div style="background:#fff7ed;padding:8px 12px;border-radius:6px;margin-bottom:8px">'
       +'<b>⚠ 월납 펜스 없는 패드 ('+monthlyNoFence.length+'대) — 배부 전 매칭 필요</b><br>'
