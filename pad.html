@@ -668,6 +668,40 @@ function doFixMonthlyFence(padNum){
   showPage('settings');
 }
 
+/* 학생을 환불대기로 전환 (모두 반납했는데 status='퇴원'으로 남은 경우) */
+function fixStudentToRefundWait(sid){
+  const st = DATA.students[sid];
+  if(!st){toast('학생 없음','error');return}
+  if(st.status!=='퇴원'){toast('퇴원 상태 학생만 가능','error');return}
+  const mp = (st.pads||[]).find(function(p){return p.type==='월납'&&!p.archived});
+  if(!mp){toast('월납 패드 없음','error');return}
+  const comps = mp.components||[];
+  const leased = mp.leased||{};
+  const returned = mp.returned||{};
+  const items = comps.filter(function(c){
+    const name = typeof c==='string'?c:c.name;
+    return leased[name]!==false;
+  });
+  const allDone = items.length>0 && items.every(function(c){
+    const name = typeof c==='string'?c:c.name;
+    return returned[name]&&(returned[name].done||returned[name].deducted);
+  });
+  if(!allDone){toast('아직 미반납 부품 있음','error');return}
+  // 학생 상태 전환
+  st.status = '환불대기';
+  if(!st.completeDate) st.completeDate = todayStr();
+  // 글로벌 패드 상태도 환불대기로
+  if(DATA.pads[mp.num]){
+    if(DATA.pads[mp.num].status==='퇴원미반납' || DATA.pads[mp.num].status==='대여중'){
+      DATA.pads[mp.num].status = '환불대기';
+    }
+  }
+  addHistory('월납','상태정합성복구',st.name+' · '+mp.num+' 회수 완료 상태로 환불대기 전환',sid,mp.num);
+  fbSave();
+  toast(st.name+' → 환불대기 전환 완료','success');
+  showPage('settings');
+}
+
 // ===== 퇴원미반납 판단 함수 (단일 진실 공급원) =====
 // 이 함수만 수정하면 대시보드/환불탭/월납탭 모두 동기화됨
 function isStudentUnreturned(st){
@@ -1053,12 +1087,8 @@ function openRenameStudent(sid){
 }
 
 function doRenameStudent(sid){
-  // id로 못 찾으면 이름으로도 검색 (Firebase key가 다를 수 있음)
-  let st=DATA.students[sid];
-  if(!st) st=Object.values(DATA.students).find(s=>s.id===sid||s.name===sid);
+  const st=DATA.students[sid];
   if(!st){toast('학생 없음','error');return}
-  // 실제 DATA key 찾기
-  const realKey=Object.keys(DATA.students).find(k=>DATA.students[k]===st)||sid;
   const el=document.getElementById('rename_input');
   const newName=(el?el.value:'').trim();
   if(!newName){toast('이름을 입력하세요','error');return}
@@ -1069,11 +1099,16 @@ function doRenameStudent(sid){
   st.name=newName;
   st.id=newName;
   DATA.students[newName]=st;
-  delete DATA.students[realKey];
+  delete DATA.students[oldName];
   // 글로벌 패드 studentId 업데이트
   Object.values(DATA.pads).forEach(p=>{if(p.studentId===oldName)p.studentId=newName;});
   // 펜스 studentId 업데이트
   Object.values(DATA.fences).forEach(f=>{if(f.studentId===oldName)f.studentId=newName;});
+  // 검색 상태도 새 이름으로 갱신 (모달 다시 열기 시 학생 못 찾는 버그 방지)
+  if(STATE.search){
+    if(STATE.search.selectedId===oldName) STATE.search.selectedId=newName;
+    if(STATE.search.q===oldName) STATE.search.q=newName;
+  }
   // 이력 기록
   addHistory('월납','이름수정',oldName+' → '+newName,newName);
   fbSave();
@@ -5212,18 +5247,87 @@ function runDiagnostic(){
       lines.push('<div style="background:#f0fff4;padding:10px 12px;border-radius:6px;margin-bottom:8px">');
       lines.push('<b>👤 '+st.name+'</b> · 상태: <b>'+st.status+'</b>');
       if(st.refundCompletedDate) lines.push(' · 환불완료일: '+st.refundCompletedDate);
+      if(st.tuebanDate) lines.push(' · 퇴원일: '+st.tuebanDate);
+      if(st.completeDate) lines.push(' · 회수완료일: '+st.completeDate);
       lines.push('<br>');
+
+      // 분류 결과 (어디 어디에 잡히는지)
+      const isUnret = (typeof isStudentUnreturned==='function') ? isStudentUnreturned(st) : false;
+      const isRefundWait = st.status==='환불대기' && !st.refundCompletedDate;
+      const tags = [];
+      if(isUnret) tags.push('<span style="background:#fee;color:#c00;padding:2px 8px;border-radius:4px;font-size:11px">대시보드 퇴원미반납</span>');
+      if(isRefundWait) tags.push('<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:4px;font-size:11px">대시보드 환불대기</span>');
+      if(st.refundCompletedDate) tags.push('<span style="background:#e0e7ff;color:#3730a3;padding:2px 8px;border-radius:4px;font-size:11px">환불완료</span>');
+      if(tags.length) lines.push('분류: '+tags.join(' ')+'<br>');
+
       (st.pads||[]).forEach(function(p){
         const gp = DATA.pads[p.num];
-        const padState = p.archived ? '보관('+p.archivedStage+')' : '활성';
+        const padState = p.archived ? '보관('+(p.archivedStage||'')+')' : '활성';
         const fenceState = gp&&gp.fenceNum ? gp.fenceNum : '없음';
         const gpState = gp ? gp.status : '패드데이터없음';
-        lines.push('└ '+p.type+' '+p.num+' | '+padState+' | 재고상태: '+gpState+' | 펜스: '+fenceState+'<br>');
+        lines.push('<div style="margin-top:6px;padding:6px 8px;background:#fff;border-radius:4px">');
+        lines.push('└ <b>'+p.type+' '+p.num+'</b> | '+padState+' | 재고상태: <b>'+gpState+'</b> | 펜스: '+fenceState+'<br>');
+
+        // 월납이면 부품별 반납 상태 보여주기
+        if(p.type==='월납' && !p.archived){
+          const comps = p.components||[];
+          const leased = p.leased||{};
+          const returned = p.returned||{};
+          if(comps.length>0){
+            const lines2 = [];
+            let allDone = true;
+            let leasedCount = 0;
+            comps.forEach(function(c){
+              const name = typeof c==='string'?c:c.name;
+              const isLeased = leased[name]!==false;
+              if(!isLeased){
+                lines2.push('<span style="color:#999">· '+name+' (대여안함)</span>');
+                return;
+              }
+              leasedCount++;
+              const r = returned[name]||{};
+              if(r.done) lines2.push('<span style="color:green">✓ '+name+' 반납</span>');
+              else if(r.deducted) lines2.push('<span style="color:#666">✓ '+name+' 차감</span>');
+              else { lines2.push('<span style="color:red">✗ '+name+' 미반납</span>'); allDone=false; }
+            });
+            lines.push('<span style="font-size:12px;padding-left:14px">'+lines2.join(' · ')+'</span><br>');
+            if(leasedCount>0 && allDone){
+              lines.push('<span style="color:green;font-size:12px;padding-left:14px">→ 모두 반납됨</span><br>');
+            }
+          }
+        }
+
         if(p.type==='월납'&&!p.archived&&gp&&!gp.fenceNum){
           lines.push('<span style="color:red;padding-left:16px">⚠ 펜스 없음 — 매칭 필요</span><br>');
           issueCount++;
         }
+        lines.push('</div>');
       });
+
+      // 자동 수정 버튼 — 상태 정합성
+      const mp_active = (st.pads||[]).find(function(p){return p.type==='월납'&&!p.archived;});
+      if(mp_active){
+        const comps = mp_active.components||[];
+        const returned = mp_active.returned||{};
+        const leased = mp_active.leased||{};
+        const items = comps.filter(function(c){
+          const name = typeof c==='string'?c:c.name;
+          return leased[name]!==false;
+        });
+        const allDone = items.length>0 && items.every(function(c){
+          const name = typeof c==='string'?c:c.name;
+          return returned[name]&&(returned[name].done||returned[name].deducted);
+        });
+        // 다 반납했는데 status가 '퇴원'이면 → 환불대기로 가야 함
+        if(allDone && st.status==='퇴원'){
+          lines.push('<div style="margin-top:8px;padding:8px;background:#fff7ed;border-radius:4px">');
+          lines.push('<b>⚠ 모두 반납했지만 학생 상태가 \'퇴원\'으로 남아있음</b> → \'환불대기\'로 전환 필요<br>');
+          lines.push('<button class="btn btn-sm btn-primary" style="margin-top:6px" onclick="fixStudentToRefundWait(\''+st.id+'\')">환불대기로 전환</button>');
+          lines.push('</div>');
+          issueCount++;
+        }
+      }
+
       lines.push('</div>');
     });
 
