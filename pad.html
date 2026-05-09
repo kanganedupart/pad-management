@@ -4302,24 +4302,63 @@ function renderFenceWork(padsNoFence, reserved, free){
 
 /* 여유 펜스 리스트 (단순 참고) */
 function renderFenceFreeList(list){
+  const hasTrash = typeof _fenceTrash !== 'undefined' && _fenceTrash.length > 0;
   return `
-    <div class="box" style="margin-bottom:12px;padding:12px;font-size:13px;color:var(--text-muted)">
-      여유 펜스는 번호가 없는 빈 계정입니다. 펜스없음 신규 패드가 있으면 [작업] 탭에서 매칭 예약으로 재활용할 수 있습니다.
+    <div class="box" style="margin-bottom:12px;padding:12px;font-size:13px;color:var(--text-muted);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+      <span>여유 펜스는 번호가 없는 빈 계정입니다. 펜스없음 신규 패드가 있으면 [작업] 탭에서 매칭 예약으로 재활용할 수 있습니다.</span>
+      ${hasTrash?`<button class="btn btn-sm" style="color:var(--primary);border:1px solid var(--primary)" onclick="fence_undoDelete()">↩ 방금 삭제 복구</button>`:''}
     </div>
     <table class="tbl">
-      <thead><tr><th>순번</th><th>이전 번호 (참고)</th><th>삭제일</th><th>삭제담당</th></tr></thead>
+      <thead><tr><th>순번</th><th>이전 번호 (참고)</th><th>삭제일</th><th>삭제담당</th>${canEdit()?'<th>작업</th>':''}</tr></thead>
       <tbody>
         ${list.length?list.map((f,i)=>{
           const prev=f.prevNum||(f.num&&!f.num.startsWith('_free_')?f.num:'—');
           return `<tr>
-            <td><span class="badge badge-green">여유 #${i+1}</span> <span style="font-size:10px;color:var(--text-light)">번호 없음</span></td>
+            <td><span class="badge badge-green">여유 #${i+1}</span></td>
             <td style="font-size:12px;color:var(--text-muted)">${prev} → 삭제됨</td>
             <td style="font-size:12px">${f.deletedDate||'—'}</td>
             <td style="font-size:12px;color:var(--text-muted)">${f.deletedBy||'—'}</td>
+            ${canEdit()?`<td><button class="btn btn-sm" style="color:var(--danger);border:1px solid var(--danger)" onclick="fence_deleteFreePad('${f.num}')">삭제</button></td>`:''}
           </tr>`;
-        }).join(''):'<tr><td colspan="4" class="tbl-empty">여유 펜스 없음</td></tr>'}
+        }).join(''):'<tr><td colspan="5" class="tbl-empty">여유 펜스 없음</td></tr>'}
       </tbody>
     </table>`;
+}
+
+// 여유펜스 삭제 휴지통 (30분 내 복구용)
+const _fenceTrash = [];
+
+function fence_deleteFreePad(key){
+  const f=DATA.fences[key];
+  if(!f){toast('펜스 없음','error');return}
+  const prev=f.prevNum||(key&&!key.startsWith('_free_')?key:'없음');
+  ask('여유 펜스 삭제',`여유 펜스 (이전 번호: <b>${prev}</b>)를 삭제할까요?<br>30분 내 복구 가능합니다.`,'삭제','danger',()=>{
+    // 휴지통에 백업
+    _fenceTrash.push({key, data:Object.assign({},f), deletedAt:Date.now(), prev});
+    // 30분 후 자동 만료
+    setTimeout(()=>{
+      const idx=_fenceTrash.findIndex(t=>t.key===key&&t.deletedAt===_fenceTrash.find(x=>x.key===key)?.deletedAt);
+      if(idx>-1) _fenceTrash.splice(idx,1);
+    }, 30*60*1000);
+    delete DATA.fences[key];
+    addHistory('펜스','여유삭제','여유 펜스 삭제 (이전: '+prev+')',null,null);
+    fbSave();
+    toast('삭제 완료 — 30분 내 복구 가능 (펜스관리 → 여유펜스 탭)','success');
+    showPage('fences');
+  });
+}
+
+function fence_undoDelete(){
+  if(!_fenceTrash.length){toast('복구할 항목 없음','error');return}
+  // 가장 최근 삭제 복구
+  const item=_fenceTrash.pop();
+  const remaining = Math.round((30*60*1000-(Date.now()-item.deletedAt))/60000);
+  if(remaining<=0){toast('복구 시간 만료 (30분 초과)','error');return}
+  DATA.fences[item.key]=item.data;
+  addHistory('펜스','여유복구','여유 펜스 복구 (이전: '+item.prev+')',null,null);
+  fbSave();
+  toast('복구 완료: 이전 번호 '+item.prev,'success');
+  showPage('fences');
 }
 
 /* ========= 펜스 작업 액션 함수들 ========= */
