@@ -618,7 +618,15 @@ function fbApplyRemoteData(val){
    복잡한 추가대여 케이스에서 부작용이 발생해 임시 OFF.
    환불완료 학생 데이터는 환불 처리 시점에 정확히 처리하는 것이 정공법. */
 function _fixDataConsistency(){
-  return; // no-op
+  // 월납 펜스가 미지정으로 잘못 저장된 경우 → 사용중으로 복구
+  let fixed = 0;
+  Object.values(DATA.fences).forEach(function(f){
+    if(f.type==='월납' && f.status==='미지정'){
+      f.status='사용중';
+      fixed++;
+    }
+  });
+  if(fixed>0) console.log('[fixDataConsistency] 월납 미지정 펜스 복구:', fixed+'개');
 }
 
 // 기종별 전체 구성품 (대여 시작 시 default)
@@ -3206,7 +3214,7 @@ function doConvert(){
     }
   } else if(fromHasFenceActual && toHasFence){
     if(DATA.fences[num]) DATA.fences[num].type=to;
-    else DATA.fences[num]={num,type:to,status:'미지정',padNum:num};
+    else DATA.fences[num]={num,type:to,status:to==='월납'?'사용중':'미지정',padNum:num};
   }
 
   addHistory('전환',`${from}→${to}${to==='무료'?'('+sub+')':''}`,num+' · '+reason,null,num);
@@ -4193,7 +4201,7 @@ function renderFences(){
   const reserved = Object.values(DATA.fences).filter(f=>f.status==='매칭예약'||f.status==='삭제예약');
   // 실제로 삭제해야 할 펜스 (매칭 재활용 불가능한 것만 → 삭제예약으로 간)
   // 여유 펜스 (번호 없음, 재활용 대기)
-  const free = Object.values(DATA.fences).filter(f=>f.status==='미지정');
+  const free = Object.values(DATA.fences).filter(f=>f.status==='미지정'&&f.type==='신규');
   const inUse = Object.values(DATA.fences).filter(f=>f.status==='사용중').length;
 
   return `
@@ -4367,7 +4375,7 @@ function fence_undoDelete(){
 function fence_openMatchModal(padNum){
   const p=DATA.pads[padNum];
   if(!p){toast('패드 없음','error');return}
-  const free=Object.values(DATA.fences).filter(f=>f.status==='미지정');
+  const free=Object.values(DATA.fences).filter(f=>f.status==='미지정'&&f.type==='신규');
   if(!free.length){toast('여유 펜스가 없습니다','error');return}
   const options=free.map((f,i)=>{
     const prev=f.prevNum||(f.num&&!f.num.startsWith('_free_')?f.num:'');
@@ -5978,7 +5986,7 @@ function intakeSave(){
   if(!isStaff){
     DATA.pads[num].fenceNum=fence;
     if(type!=='무료'&&!DATA.fences[fence]){
-      DATA.fences[fence]={num:fence,type,status:'미지정',padNum:num};
+      DATA.fences[fence]={num:fence,type,status:type==='월납'?'사용중':'미지정',padNum:num};
     }
   }
   const after=Object.values(DATA.pads).filter(p=>p.type===type).length;
@@ -6024,7 +6032,7 @@ function intakeUpload(){
       const status=type==='무료'?'보관':'창고';
       DATA.pads[num]={num,type,model,status,fenceNum:fnum,intakeDate:todayStr(),intakeBy:currentUser};
       if(type!=='무료'&&!DATA.fences[fnum]){
-        DATA.fences[fnum]={num:fnum,type,status:'미지정',padNum:num};
+        DATA.fences[fnum]={num:fnum,type,status:type==='월납'?'사용중':'미지정',padNum:num};
       }
       added[type]++;
       ok++;
